@@ -17,7 +17,9 @@
 ]]
 
 
-local TV=2.0001;						-- Set this version (2.00 -> WoWnet)
+local TV=2.02;
+-- 2.02
+-- - table (de)compression system
 -- 2.0001
 -- + password protection on text
 -- + modified base64 coding functions
@@ -133,6 +135,167 @@ function DM:Chat(msg,r,g,b)
 		DEFAULT_CHAT_FRAME:AddMessage(msg,r,g,b);
 	end
 end
+
+
+-- Table compression utility
+-- API:
+-- DuckMod.Table:Default(who,UseCache,Base)
+--    Set default options for your addon.
+--       who      - An identifier for your add-on.
+--       UseCache - Use cached mode
+--       Base     - Set a default table for read/write
+--
+-- DuckMod.Table:Read(who,entry,base)
+--    Read a compressed entry
+--       who   - Your addon's ID, if any
+--       entry - The entry you want to read
+--       base  - The base table where 'entry' is located. If omitted,
+--               the default setting for your addon will be used.
+--
+-- DuckMod.Table:Write(who,entry,tData,base)
+--     Write an uncompressed entry
+--       who   - Your addon's ID, if any
+--       entry - The entry you want to write
+--       tData - Data write to 'entry'
+--       base  - The base table where 'entry' is located. If omitted,
+--               the default setting for your addon will be used.
+
+DM.Table={
+	Default={
+		Default={
+			UseCache=true,
+			Base=nil,
+		},
+	},
+	Entry ="\1",
+		String=Entry.."\1",
+		Number=Entry.."\2",
+		Bool  =Entry.."\3",
+		Nil   =Entry.."\4",
+		Other =Entry.."\9",
+	sTable="\2",
+	eTable="\3",
+	Version="\4",
+		ThisVersion="1",
+	Last="\4",
+};
+
+function DM.Table:Default(who,UseCache,Base)
+	if (who=="Default") then return; end
+	if (not DM.Table.Default[who]) then DM.Table.Default[who]={};
+	wipe(DM.Table.Default[who]);
+	DM.Table.Default[who].UseCache = UseCache;
+	DM.Table.Default[who].Base     = Base;
+end
+
+function DM.Table:GetType(typedata,tdExtra)
+	if (type(typedata)=="table") then return DM.Table.sTable..string.char(tdExtra); end
+	if (type(typedata)=="string") then return DM.Table.String; end
+	if (type(typedata)=="number") then return DM.Table.Number; end
+	if (type(typedata)=="boolean") then return DM.Table.Bool; end
+	if (not typedata) then return DM.Table.Nil; end
+	return DM.Table.Other;
+end
+
+--tostring(123)  --Returns "123"
+--tostring({})  --Returns "table: ###"
+--tostring(function() end) --Returns "function: ###"
+--tostring(nil) --Returns "nil"
+--tostring(true) --Returns "true"
+
+--[[
+	MyTable = {
+		First = {
+			fdata=5,
+		}
+		second = {
+			sdata="text",
+		}
+	}
+
+	base[MyTable]="
+	'Version''ThisVersion'sTable1'	-> Write
+	'String'First'sTable2'			-> Compress (1)
+	'String'fdata'Number'			-> Compress (2)
+	5								-> Compress (3)
+	'eTable2'						-> Compress (2)
+	'String'second'sTable2'			-> Compress (1)
+	'String'sdata'String'			-> Compress (2)
+	text							-> Compress (3)
+	'eTable2'						-> Compress (2)
+	'eTable1'						-> Compress (1)
+]]
+
+function DM.Table:CompressV1(tData,level)
+	local text="";
+	if (type(tData)~="table") then return tostring(tData); end
+	for entry,eData in pairs(tData) do
+		text=text..self:GetType(entry)..entry..self:GetType(eData,level)..self:CompressV1(eData,level+1);
+	end
+	return text..self.eTable..string.char(level);
+end
+
+function DM.Table:Write(who,entry,tData,base)
+	if (not who) then who="Default"; end
+	if (not base) then if (not self:Default[who].Base) then return nil; end base=self:Default[who].Base; end
+	base[entry]=self.Version..self.ThisVersion..self:GetType(eData,1)..self:CompressV1(tData,2);
+	return true;
+end
+
+--[[
+	index
+	  1   2 -> Entry-type
+	  3   a -> Entry name
+	a+1 a+2 -> Data type
+	a+3   b -> Data
+]]
+function DM.Table:PullEntry(cString)
+	local stop=cString:find(self.Entry,3); if (not stop) then return nil; end	-- Missing data
+	return cString:sub(1,2),cString:sub(3,stop-1),cString:sub(stop);
+end
+
+function DM.Table:PullData(cString)
+	local stop=cString:find(self.Entry,3); if (not stop) then stop=cString:len()+1; end
+	if (cString:sub(1,1)~=self.sTable) then
+		return cString:sub(1,2),cString:sub(3,stop-1),cString:sub(stop);
+	end
+
+	local stop=cString:find(self.eTable..cString:sub(2,2))+2;	-- Find and include table endtag
+	return cString:sub(1,2),cString:sub(3,stop-3),cString:sub(stop);	-- Remove tags and return
+end
+
+function DM.Table:DecompressV1(base,cString)
+	local eType,eName,dType,dData;
+
+	while(cString:len()>0) do
+		eType,eName,cString=self:PullEntry(cString);
+		if (eType==self.Number) then eName=tonumber(eName); end
+
+		dType,dData,cString=self:PullNext(cString);
+		if (dType==self.Number) then dData=tonumber(dData);
+		elseif (dType==self.Bool) then if (dData=="true") then dData=true; else dData=false; end
+		elseif (dType==self.Nil) then dData=nil;
+		elseif (dType:sub(1,1)==self.sTable) then
+			base[eName]={};
+			self:DecompressV1(base[eName],dData);	-- dData is now without table-tags
+		end
+		if (not base) then return dData;
+		else base[eName]=dData; end
+	end
+	return base;
+end
+
+function DM.Table:Read(who,entry,base)
+	if (not who) then who="Default"; end								-- Using default settings
+	if (not base) then if (not self:Default[who].Base) then return nil; end base=self:Default[who].Base; end
+	if (not base[entry]) then return nil; end							-- Entry does not exist
+	if (type(base[entry])~="string") then return base[entry]; end		-- It's uncompressed data
+	if (base[entry]:byte(1)~=self.Version) then return base[entry]; end	-- It's uncompressed data
+	local fnDecompress=self["DecompressV"..base[entry]:sub[2,2]];		-- Look for decompressor
+	if (not fnDecompress) then return nil; end		-- We don't have a decompressor for this data
+	return fnDecompress(nil,base[entry]:sub(3));						-- Strip version
+end
+
 
 DM.Code={};
 
