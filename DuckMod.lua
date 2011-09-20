@@ -16,9 +16,14 @@
 	along with DuckMod.  If not, see <http://www.gnu.org/licenses/>.
 ]]
 
+TestDebugTable={}
 
-local TV=2.06;
+local TV=2.07;
+-- 2.07
+-- o WoWnet v0.01: Data transmission by Base64 coding for full digital
+--   transmission. Supports multiple page reception.
 -- 2.06
+-- o Work on WoWnet progresses. Finally.
 -- + Added simple generic multi-threading library methods
 -- + Fixed bug in cache that effectively switched it off
 -- 2.04
@@ -116,6 +121,7 @@ end
 
 -- Safe table-copy with optional merge (equal entries will be overwritten)
 function DM:CopyTable(t,new)
+	if (not t) then return nil; end
 	if (not new) then new={}; end
 	local i,v;
 	for i,v in pairs(t) do
@@ -623,21 +629,29 @@ end
 
 -- WoWnet
 DM.WoWnet={
+	prefix="Wnet",
 	Connected=nil,				-- Not connected yet
-	Contents=nil,				-- Complete server contents (this server)
 	Session={					-- Data and functions specific for sessions
+		LoopBack=nil,			-- Running in loopback mode. i.e playing the madman (talk to self)
+		LastPubOut=nil,			-- Last data sent to public channel
 		cbSearchResult=nil,		-- Callback: Incoming search-results
 	},
+	LinkColour="ffff8080";
+};
+
+-- The host-data for all servers on this ream/faction.
+WoWnetServer={			-- Complete server contents (this server)
 };
 
 --[[
-	section
-		SECTIONDATA
-			Keys="key1,key2,...,keyN"
-			Data=page-data
-			Description="Short description"
-		subsection
-			...
+	host
+		section
+			SECTIONDATA
+				Keys="key1,key2,...,keyN"
+				Data=page-data
+				Description="Short description"
+			subsection
+				...
 ----------------------------------------
 	contents
 		host1
@@ -651,24 +665,71 @@ DM.WoWnet={
 		host2
 			...
 ]]
+
+function DM.WoWnet:Link(location,text)
+	return "|c"..DM.WoWnet.LinkColour.."|Hwownet:"..location.."|h["..text.."]|h|r";
+end
+
+
 -- contents -> Table for server contents
-function DM.WoWnet:Connect(contents,cbSR,cbID)
-	if (not JoinChannelByName("WoWnet")) then self.Connected=nil; else self.Connected=true; end
+function DM.WoWnet:Connect(cbSR,cbID)
+	local channel="WoWnet"
+	if (not JoinChannelByName(channel)) then
+		local count=1
+		self.Connected=nil;
+		DM:Chat("Someone has blocked the WoWnet channel on this server.");
+		while(not JoinChannelByName("WoWnet"..count)) do
+			count=count+1;
+		end
+		channel="WoWnet"..count;
+		DM:Chat("Open WoWnet found at "..channel);
+	end
+	self.Connected=GetChannelName(channel);
+	DM:Chat("Connected to WoWnet - "..type(self.Connected).." - "..self.Connected);
 	if (self.Connected) then
-		if (self.Contents) then DM:ClearTable(self.Contents); end
-		self.Contents=DM:CopyTable(contents);
 		self.Session.cbSearchResult=cbSR;
 		self.Session.cbInData=cbID;
+		RegisterAddonMessagePrefix(DM.WoWnet.prefix);
+--		DM.Table:Init(DM.WoWnet.prefix,nil,WoWnetServer);
 	else
-		self.Contents=nil;
 		self.Session.cbSearchResult=nil;
 		self.Session.cbInData=nil;
 	end
 	return self.Connected;
 end
 
+
+--	WoWnetServer["Jäähinen"]={
+--		home={
+--			SECTIONDATA={
+--				Keys="blog,Who da man?",
+--				Data="<html><body><h1>SimpleHTML Demo: Ambush</h1><img src=\"Interface\\Icons\\Ability_Ambush\" width=\"32\" height=\"32\" align=\"right\"/><p align=\"center\">|cffee4400'You think this hurts? Just wait.'|r</p><br/><br/><p>Among every ability a rogue has at his disposal,<br/>Ambush is without a doubt the hardest hitting Rogue ability.</p></body></html>",
+--				Description="Jäähinen's home-page.",
+--			},
+--		},
+--	};
+
 -- Traverse all keys for this section and collate matched locations
 function DM.WoWnet:CheckKeys(section,sTable,key)
+	local list={};
+	for entry,eTable in pairs(sTable) do
+		if (entry~="SECTIONDATA") then
+			list=DM:CopyTable(self:CheckKeys(section.."/"..entry,eTable,key),list);
+		else
+			if (eTable.Keys) then
+				local param={strsplit(",",eTable.Keys)};
+				for _,tag in pairs(param) do
+					tag=string.lower(strtrim(tag));
+					if (tag==key) then
+						if (not eTable.Description) then list[section]="<no description>";
+						else list[section]=eTable.Description; end
+						break;
+					end
+				end
+			end
+		end
+	end
+--[[
 	local list={};
 	for entry,eTable in pairs(sTable) do
 		if (eTable.SECTIONDATA.Keys) then
@@ -688,6 +749,7 @@ function DM.WoWnet:CheckKeys(section,sTable,key)
 			end
 		end
 	end
+]]
 	return list;
 end
 
@@ -695,7 +757,7 @@ end
 function DM.WoWnet:FindKey(key)
 	key=string.lower(strtrim(key));
 	local list={};
-	for host,hTable in pairs(self.Contents) do
+	for host,hTable in pairs(WoWnetServer) do
 		list[host]={};
 		for section,sTable in pairs(hTable) do
 			list[host]=DM:CopyTable(self:CheckKeys("/"..section,sTable,key),list[host]);
@@ -709,7 +771,7 @@ end
 -- text -> The data
 function DM.WoWnet:Input(sender,text)
 	-- A search-phrase received
-	if (string.find(text,"search:")==1) then
+	if (text:find("search:",1,true)==1) then
 		text=string.sub(text,8);
 		-- Get section-list for supplied keys
 		local param={strsplit(",",text)};
@@ -721,26 +783,117 @@ function DM.WoWnet:Input(sender,text)
 			index=index+1;
 		end
 		-- Check the list
+		local found=nil;
 		for host,hTable in pairs(list) do
-			if ((#hTable)==0) then list[host]=nil; end	-- This host have no matches
+			found=true;
+			break;
 		end
-		if ((#list)==0) then return; end				-- No matches at all
+		if (not found) then return; end				-- No matches at all
+--TestDebugTable=DM:CopyTable(list);
 		-- There are matches, so "answer the general, Baldrick"
 		for host,hTable in pairs(list) do
 			for section,desc in pairs(hTable) do
 				self.Session:SendContents(sender,host,section..DUCKNET_WNSPLIT1..desc);
 			end
 		end
+	elseif (text:find("goloc:",1,true)==1) then
+--		DM:Chat("Location request: "..text:sub(7),1);
+		self.Session:HandleAddress(sender,text:sub(7));
 	end
 end
 
--- user -> The real user to send the message to
+function DM.WoWnet.Session:HandleAddress(sender,text)
+	local splitter=text:find("/",1,true);
+	local who,loc;
+	if (splitter) then
+		who=text:sub(1,splitter-1);
+		loc=text:sub(splitter+1);	-- Not +1 since we keep the "/" in front
+	else
+		who=text;
+		loc=""
+	end
+--	DM:Chat("Testing who: "..who,1);
+	if (not WoWnetServer[who]) then return; end
+--	DM:Chat(who.." is here.",1);
+	if (loc=="") then
+		loc="home";
+		if (not WoWnetServer[who]["home"]) then
+			loc="default";
+			if (not WoWnetServer[who]["default"]) then
+				return;
+			end
+		end
+	end
+	if (not WoWnetServer[who][loc]["SECTIONDATA"]) then
+		return;
+	end
+	self:SendData(sender,text,WoWnetServer[who][loc]["SECTIONDATA"])
+end
+
+function DM.WoWnet.Session:Search(data)
+	self:SendPublic("search:"..data);
+end
+
+function DM.WoWnet.Session:GoTo(data)
+	DM.Net:ConnectW(DM.WoWnet.prefix,DM.WoWnet.Session.cbInData,"");
+	self:SendPublic("goloc:"..data);
+end
+
+function DM.WoWnet.Session:SendPublic(data)
+	DM.WoWnet.Session.LastPubOut=data;
+	SendChatMessage(data,"CHANNEL",nil,DM.WoWnet.Connected);
+end
+
+function DM.WoWnet.Session:HandleLink(link)
+	local lType,lAddress=strsplit(":",link);
+	if (lType=="wownet") then
+--		DM:Chat("Clicked "..lType.." link: "..lAddress,1);
+		DM.WoWnet.Session:GoTo(lAddress);
+	end
+end
+
+-- receiver -> The real user to send the message to
 -- host -> The host to request a session with ("user" may be an alt of the host)
 -- data -> Data to send
 function DM.WoWnet.Session:SendContents(receiver,host,data)
-	if ((string.len(host)+3+string.len(data)+1)>254) then return nil; end
-	SendAddonMessage("wNc"..host,data,"WHISPER",receiver);
+--	DM:Chat("-> WN user: "..receiver,1);
+--	DM:Chat("-> WN host: "..host,1);
+--	DM:Chat("-> WN data: "..data,1);
+	if ((string.len(host)+3+string.len(data)+1)>255) then return nil; end
+	DM.WoWnet.Session:SAM("wNc"..host..":"..data,"WHISPER",receiver);
 	return true;
+end
+
+-- receiver -> Who to /w to
+-- location -> The address of the data following
+-- data - The data for this location
+function DM.WoWnet.Session:SendData(receiver,location,data)
+--DM:Chat("ConnectW to "..receiver,1);
+	DM.Net:ConnectW(DM.WoWnet.prefix,DM.WoWnet.Session.cbInData,receiver);
+--DM:Chat("Sending table for "..location,1);
+
+--	DM.Net:SendTable(DM.WoWnet.prefix,data,location);	-- 101 is base nested table ASCII code
+
+	local prefix=DM.WoWnet.prefix;
+	if (not DM.Net:CanTransmit(prefix)) then return false; end					-- Can't transmit now
+	DM.Net:ClearOutput(prefix);
+	DM.Net:AddKey(prefix,"S",0);
+	DM.Net:AddKey(prefix,"M","SendData");
+	DM.Net:AddKey(prefix,"A",DUCKNET_ACT_TRANSMIT);
+	DM.Net:NewLine(prefix);
+	local text;
+	text=DM.Code:Code(DM.Table:CompressV1(data,101));
+	if (not DM.Net:AddEntry(prefix,location,text)) then return nil; end
+	return DM.Net:DoTransmission(prefix);
+end
+
+-- SAM: Send Addon Message
+function DM.WoWnet.Session:SAM(a1,a2,a3)
+	SendAddonMessage(DM.WoWnet.prefix,a1,a2,a3);
+--	if (a4==UnitName("player")) then
+--		DM:Chat("-> LOOPBACK",1);
+--		DM.Net:OnEvent("CHAT_MSG_ADDON",a1,a2,a3,a4);
+--	end
 end
 
 function DM.WoWnet.Session:SendError(prefix,header,message)
@@ -759,10 +912,13 @@ end
 -- host -> Host for which contents is requested
 -- data -> section DUCKNET_WNSPLIT1 description
 function DM.WoWnet.Session:Contents(sender,host,data)
-	if (not self.Session.cbSearchResult) then return; end
-	self.Session.cbSearchResult(sender,host,strsplit(DUCKNET_WNSPLIT1,data));
+--DM:Chat("Ready...",1);
+	if (not self.cbSearchResult) then return; end
+--DM:Chat("Cleared...",1);
+	self.cbSearchResult(sender,host,strsplit(DUCKNET_WNSPLIT1,data));
 end
 
+--[[
 -- Called when a "WHISPER" with "wNr" is received, denoting a request for a page
 function DM.WoWnet.Session:Request(sender,host,data)
 	local prefix="nWd"..host;
@@ -772,7 +928,7 @@ function DM.WoWnet.Session:Request(sender,host,data)
 					DM.WoWnet.Session.INFO,	-- INFO callback
 					sender);				-- Receiver of data
 	-- Find host
-	if (not DM.WoWnet.Contents[host]) then
+	if (not WoWnetServer[host]) then
 		self:SendError(prefix,"Fatal error","The host \""..host.."\" were not found.");
 		return true;		-- Set input as "Handled"
 	end
@@ -780,13 +936,13 @@ function DM.WoWnet.Session:Request(sender,host,data)
 	-- Find section
 	local loc={strsplit("/",data)};
 	local index=1;
-	local here=DM.WoWnet.Contents[host];
+	local here=WoWnetServer[host];
 	while(loc[index]) do
-		if (not here[loc[index]]) then
+		if (not here[loc[index] ]) then
 			self:SendError(prefix,"Fatal error","The destination \""..loc[index].."\" does not exist.");
 			return true;		-- Set input as "Handled"
 		end
-		here=here[loc[index]];
+		here=here[loc[index] ];
 		index=index+1;
 	end
 	if (index==1) then		-- root requested
@@ -822,16 +978,19 @@ function DM.WoWnet.Session:Request(sender,host,data)
 
 	return true;	-- Set input as "Handled"
 end
+]]
 
+--[[
 -- A table
 function DM.WoWnet.Session.RX(input)
-	if (not self.Session.cbInData) then return; end
+	if (not DM.WoWnet.Session.cbInData) then return; end
 	DM.WoWnet.Session.cbInData(DM.WoWnet.Session.InMarker,input);
 end
+]]
 
 -- A table
 function DM.WoWnet.Session.INFO(input)
-	local info=input;
+	local info=DM:CopyTable(input);
 
 	local marker=nil;
 
@@ -909,6 +1068,9 @@ end
 
 function DM.Net:Valid(prefix,ctype)
 	if (not prefix) then return nil; end							-- None provided
+	if (prefix==DM.WoWnet.prefix and DM.WoWnet.Connected and ctype=="WHISPER") then
+		return true;
+	end
 	if (not self.DB[prefix]) then return nil; end				-- Provided, but not registered
 	if (ctype) then
 		if (self.DB[prefix].CType~=ctype) then return nil; end	-- Wrong channel type
@@ -1009,20 +1171,34 @@ end
 function DM.Net:OnEvent(event,arg1,arg2,arg3,arg4,_,_,_,_,arg9)
 	if (event=="CHAT_MSG_ADDON") then
 		-- Check for WoWnet input
-		if (string.find(arg1,"wN")==1 and arg3=="WHISPER") then
-			local host=string.sub(arg1,3);
-			if (string.find(host,"r")==1) then			-- Request received
-				local host=string.sub(host,2);
-				if (DM.WoWnet.Session:Request(arg4,host,arg2)) then return; end
-			elseif (string.find(host,"c")==1) then		-- Contents received
-				local host=string.sub(host,2);
-				if (DM.WoWnet.Session:Contents(arg4,host,arg2)) then return; end
+		if (arg1==DM.WoWnet.prefix and arg3=="WHISPER") then
+			if (arg2:find("wN")==1) then
+--DM:Chat("<- "..arg2,1);
+--DM:Chat("<- "..arg3,1);
+--DM:Chat("<- "..arg4,1);
+				local splitter=arg2:find(":");
+				local host=arg2:sub(1,splitter-1);
+				arg2=arg2:sub(splitter+1);
+--DM:Chat("<- "..splitter,1);
+--DM:Chat("<- "..host,1);
+--DM:Chat("<- "..arg2,1);
+
+				host=host:sub(3);
+				if (host:find("r")==1) then			-- Request received
+					host=host:sub(2);
+					if (DM.WoWnet.Session:Request(arg4,host,arg2)) then return; end
+				elseif (host:find("c")==1) then		-- Contents received
+					host=host:sub(2);
+-- DM:Chat("<- "..arg1,1); DM:Chat("<- "..arg2,1); DM:Chat("<- "..arg3,1); DM:Chat("<- "..arg4,1);
+					if (DM.WoWnet.Session:Contents(arg4,host,arg2)) then return; end
+				end
 			end
 		end
 --arg1	prefix
 --arg2	message
 --arg3	distribution type ("PARTY", "RAID", "GUILD", "BATTLEGROUND" or "WHISPER")
 --arg4	sender
+
 		-- Normal input
 		local instance=nil;
 		if (DuckMod_Present) then instance=DuckMod_DN_CHAT_MSG_ADDON(arg1,arg2,arg3,arg4); else instance=arg4; end
@@ -1030,8 +1206,12 @@ function DM.Net:OnEvent(event,arg1,arg2,arg3,arg4,_,_,_,_,arg9)
 		DM.Net:ParseInput(arg1,arg2,instance);								-- It's from a registered channel, so attempt to decode it
 		return;
 	end
-	if (event=="CHAT_MSG_CHANNEL" and strlower(arg9)=="wownet") then
-		DM.WoWnet:Input(arg2,arg1);
+	if (event=="CHAT_MSG_CHANNEL" and strlower(arg9:sub(1,6))=="wownet") then
+		if (arg1~=DM.WoWnet.Session.LastPubOut) then
+			DM.WoWnet:Input(arg2,arg1);
+		else
+			DM.WoWnet.Session.LastPubOut=nil;
+		end
 		return;
 --arg1	chat message
 --arg2	author
@@ -1129,16 +1309,24 @@ function DM.Net:ParseInput(prefix,text,instance)
 	end
 
 
+--DM:Chat("...here 0...");
 --[[	Validate input	]]
 	if (not self:Valid(prefix)) then return; end		-- Validate incoming prefix
+--DM:Chat("...here 0a...");
 
 	-- InStamp also at own stuff
 	local now=time();
 	if (self.DB[prefix].CallBack.InStamp) then self.DB[prefix].CallBack.InStamp(now); end
 
 	-- Base evaluation
+--	if (self.DB[prefix].Receiver) then
+--		self.DB[prefix].LastOutput=nil;			-- You're on /w. No echo ever comes.
+--	end
+--DM:Chat("...here 1...");
 	if (text==self.DB[prefix].LastOutput) then self.DB[prefix].LastOutput=nil; return; end	-- Own transmission received
+--DM:Chat("...here 2...");
 	if (not text) then return; end
+--DM:Chat("...here 3...");
 	text=self:SwapText(text,DUCKNET_TOCODE,DUCKNET_FROMCODE);
 
 	-- Check for broken lines, for concatenation
@@ -1231,6 +1419,13 @@ function DM.Net:ParseInput(prefix,text,instance)
 
 		--[[ Inbound transmission is finished ]]
 		elseif (tag==DUCKNET_COMMAND.."A" and entry==DUCKNET_ACT_TRANSMITDONE) then
+			if (self.DB[prefix].Receiver) then		-- Decode and unpack data for WoWnet
+				for nDataEntry,_ in pairs(self.DB[prefix].Data) do
+					-- Repack all in a table, as outer table has not been coded
+					self.DB[prefix].Data[nDataEntry]=DM.Table:GetType({},100)..DM.Code:Decode(self.DB[prefix].Data[nDataEntry])..DM.Table.eTable..string.char(100);	-- Decode
+					self.DB[prefix].Data[nDataEntry]=DM.Table:DecompressV1({},self.DB[prefix].Data[nDataEntry],true);	-- Unpack
+				end
+			end
 			if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Incoming data done"); end
 			self.DB[prefix].CallBack.RX(self.DB[prefix].Data);				-- Give table-pointer to registered addon
 			self.DB[prefix].LastEntry=-1;										-- Nothing received yet
@@ -1389,7 +1584,9 @@ function DM.Net:Out(prefix,text)
 
 -- Comment out these two to not get kicked at trans-debug
 	SendAddonMessage(prefix,text,self.DB[prefix].CType,self.DB[prefix].Receiver);
-	self.DB[prefix].LastOutput=text;
+	if (not self.DB[prefix].Receiver) then
+		self.DB[prefix].LastOutput=text;
+	end
 
 	if (self.DuckNet_DebugData) then DM:Chat("! "..prefix.." "..text); end
 end
@@ -1479,9 +1676,9 @@ function DM.Net:ReturnNull()
 	return 0;
 end
 
-function DM.Net:ConnectW(prefix,cbRX,cbINFO,receiver)
+function DM.Net:ConnectW(prefix,cbRX,receiver)
 	local ctype="WHISPER";
-	self:Connect(prefix,ctype,nil,cbRX,nil,cbINFO,nil,nil,nil,nil);
+	self:Connect(prefix,ctype,nil,cbRX,nil,DM.WoWnet.Session.INFO,nil,nil,nil,nil);
 	self.DB[prefix].Receiver=receiver;
 	self.DB[prefix].Alive=time();
 end
@@ -1495,6 +1692,7 @@ function DM.Net:Connect(prefix,ctype,ctDATA,cbRX,cbTX,cbINFO,cbCS,cbNW,cbIS,pb)
 	end;
 
 	-- Define the addon
+	RegisterAddonMessagePrefix(prefix);
 	self.DB[prefix]={ };
 	self.DB[prefix].CType=ctype;
 	self.DB[prefix].PB=pb;
@@ -1591,6 +1789,7 @@ end
 -- Return true: Data will be sent shortly
 -- Return false: Data can't be sent now
 -- Return nil: Data is unsendable
+----DM.Net:SendTable(DM.WoWnet.prefix,data,location);
 function DM.Net:SendTable(prefix,ADD_Data,ADD_BlockName,ADD_Stamp)
 	if (not ADD_Data) then return nil; end
 	if (not ADD_BlockName) then ADD_BlockName=prefix; end
@@ -1844,6 +2043,8 @@ end
 function DM:Init()
 	DM.Net:Init();
 end
+
+--LeaveChannelByName("WoWnet");
 
 
 end		-- if (not DuckMod[TV]) then
