@@ -17,9 +17,27 @@
 ]]
 
 
-local TV=2.02;
+local TV=2.06;
+-- 2.06
+-- + Added simple generic multi-threading library methods
+-- + Fixed bug in cache that effectively switched it off
+-- 2.04
+-- + Changed cache to only work for decoded base data (who), enabling
+--   decode of many sources without corrupting the cache.
+-- + Added an extra level for cache tables
+-- 2.0204
+-- + Detects uncoded text in "Decode"
+-- + Added "Purge" for table-cache
+-- 2.0203
+-- + Fixed showstopper bug in event handling
+-- + Fixed bug in password and coding
+-- 2.0202
+-- + Table compression enhancement
+-- 2.0201
+-- + Fix for OnUpdate
 -- 2.02
--- - table (de)compression system
+-- + table (de)compression system
+-- + ^^ Cache
 -- 2.0001
 -- + password protection on text
 -- + modified base64 coding functions
@@ -137,9 +155,85 @@ function DM:Chat(msg,r,g,b)
 end
 
 
+-- Multi-threading utility
+-- DM.MT:Set(func)
+--    Register a function for MT
+
+DM.MT={
+	LastStack="",
+	Current=0,
+	Count=0,
+	Speed=(1/30),
+	LastTime=0,
+	Threads={
+	},
+};
+
+function DM.MT:Run(name,func,...)
+	for _,tTable in pairs(self.Threads) do
+		if (tTable.orig==func) then return; end
+	end
+	self.RunningCo=true;
+	self.Count=self.Count+1;
+--DM:Chat("Starting "..name);
+	self.Threads[self.Count]={};
+	self.Threads[self.Count].name=name;
+	self.Threads[self.Count].orig=func;
+	self.Threads[self.Count].cr=coroutine.create(func);
+	self.LastTime=GetTime();
+	self.LastStack="Running "..name;
+	local succeeded,result=coroutine.resume(self.Threads[self.Count].cr,...);
+	if (not succeeded and Swatter) then
+		if (Swatter) then Swatter.OnError(result,nil,self.LastStack);
+		else DM:Chat(result); DM:Chat(self.LastStack); end
+	end
+	self.RunningCo=nil;
+end
+
+function DM.MT:Yield(immediate,dbdata)
+	self.LastStack=debugstack(2);
+	local now=GetTime();
+	if (not immediate) then
+		if (now-self.LastTime<self.Speed) then return; end
+	end
+	self.LastTime=now;		-- Inaccurate to account for other snags
+	coroutine.yield();
+	self.LastStack=debugstack(2);
+end
+
+function DM.MT:Next()
+	if (self.RunningCo) then return; end	-- Don't if we are already doing it. In case of real MT.
+	if (not self.Threads[self.Current+1]) then self.Current=0; end	-- Wrap
+	self.Current=self.Current+1;
+	if (not self.Threads[self.Current]) then return; end	-- Nothing to do
+	if (coroutine.status(self.Threads[self.Current].cr)=="dead") then
+		local removeIt=self.Current;
+--DM:Chat("Ending "..self.Threads[removeIt].name);
+		while (self.Threads[removeIt]) do
+			self.Threads[removeIt]=self.Threads[removeIt+1];
+			removeIt=removeIt+1;
+		end
+		self.Current=self.Current-1;
+		self.Count=self.Count-1;
+	else
+		self.RunningCo=true;
+		local succeeded,result=coroutine.resume(self.Threads[self.Current].cr);
+		if (not succeeded) then
+			if (Swatter) then Swatter.OnError(result,nil,self.LastStack);
+			else DM:Chat(result); DM:Chat(self.LastStack); end
+		end
+ 		self.RunningCo=nil;
+	end
+end
+
+function DM.MT:Processes()
+	return self.Count;
+end
+
+
 -- Table compression utility
 -- API:
--- DuckMod.Table:Default(who,UseCache,Base)
+-- DuckMod.Table:Init(who,UseCache,Base)
 --    Set default options for your addon.
 --       who      - An identifier for your add-on.
 --       UseCache - Use cached mode
@@ -161,40 +255,45 @@ end
 --               the default setting for your addon will be used.
 
 DM.Table={
+	Scrap={},
 	Default={
 		Default={
 			UseCache=true,
 			Base=nil,
 		},
 	},
-	Entry ="\1",
-		String=Entry.."\1",
-		Number=Entry.."\2",
-		Bool  =Entry.."\3",
-		Nil   =Entry.."\4",
-		Other =Entry.."\9",
-	sTable="\2",
-	eTable="\3",
-	Version="\4",
+	Entry ="\1",			-- 
+		String="\1\1",
+		Number="\1\2",
+		Bool  ="\1\3",
+		Nil   ="\1\4",
+		Other ="\1\9",
+	sTable="\2",			-- 
+	eTable="\3",			-- 
+	Version="\4",			-- 
 		ThisVersion="1",
 	Last="\4",
 };
 
-function DM.Table:Default(who,UseCache,Base)
+
+
+function DM.Table:Init(who,UseCache,Base)
 	if (who=="Default") then return; end
-	if (not DM.Table.Default[who]) then DM.Table.Default[who]={};
-	wipe(DM.Table.Default[who]);
-	DM.Table.Default[who].UseCache = UseCache;
-	DM.Table.Default[who].Base     = Base;
+	if (not Base) then return nil; end
+	if (not self.Default[who]) then self.Default[who]={}; end
+	wipe(self.Default[who]);
+	self.Default[who].UseCache = UseCache;
+	self.Default[who].Base     = Base;
+	self.Default[who].Cache    = {};
 end
 
 function DM.Table:GetType(typedata,tdExtra)
-	if (type(typedata)=="table") then return DM.Table.sTable..string.char(tdExtra); end
-	if (type(typedata)=="string") then return DM.Table.String; end
-	if (type(typedata)=="number") then return DM.Table.Number; end
-	if (type(typedata)=="boolean") then return DM.Table.Bool; end
-	if (not typedata) then return DM.Table.Nil; end
-	return DM.Table.Other;
+	if (type(typedata)=="string") then return self.String; end
+	if (type(typedata)=="number") then return self.Number; end
+	if (type(typedata)=="boolean") then return self.Bool; end
+	if (type(typedata)=="table") then return self.sTable..string.char(tdExtra); end
+	if (not typedata) then return self.Nil; end
+	return self.Other;
 end
 
 --tostring(123)  --Returns "123"
@@ -231,14 +330,35 @@ function DM.Table:CompressV1(tData,level)
 	if (type(tData)~="table") then return tostring(tData); end
 	for entry,eData in pairs(tData) do
 		text=text..self:GetType(entry)..entry..self:GetType(eData,level)..self:CompressV1(eData,level+1);
+		if (type(eData)=="table") then
+			text=text..self.eTable..string.char(level);
+		end
 	end
-	return text..self.eTable..string.char(level);
+	return text;
 end
 
-function DM.Table:Write(who,entry,tData,base)
+function DM.Table:Write(who,entry,tData,base,section)
+	local cache=self.Default[who].UseCache;
 	if (not who) then who="Default"; end
-	if (not base) then if (not self:Default[who].Base) then return nil; end base=self:Default[who].Base; end
-	base[entry]=self.Version..self.ThisVersion..self:GetType(eData,1)..self:CompressV1(tData,2);
+	if (not base) then
+		base=self.Default[who].Base;
+	elseif (section and base~=self.Default[who].Base[section]) then		-- Only cache for base data
+		cache=false
+	end
+	base[entry]=self.Version..self.ThisVersion..self:GetType(tData,100)..self:CompressV1(tData,101);
+	base[entry]=base[entry]..self.eTable..string.char(100);
+
+	if (cache) then
+		if (base==self.Default[who].Base) then
+			if (section) then
+				if (not self.Default[who].Cache[section]) then self.Default[who].Cache[section]={}; end
+				cache=self.Default[who].Cache[section];
+			else
+				cache=self.Default[who].Cache;
+			end
+			cache[entry]=tData;
+		end
+	end
 	return true;
 end
 
@@ -249,51 +369,131 @@ end
 	a+1 a+2 -> Data type
 	a+3   b -> Data
 ]]
+
 function DM.Table:PullEntry(cString)
-	local stop=cString:find(self.Entry,3); if (not stop) then return nil; end	-- Missing data
-	return cString:sub(1,2),cString:sub(3,stop-1),cString:sub(stop);
-end
-
-function DM.Table:PullData(cString)
-	local stop=cString:find(self.Entry,3); if (not stop) then stop=cString:len()+1; end
-	if (cString:sub(1,1)~=self.sTable) then
-		return cString:sub(1,2),cString:sub(3,stop-1),cString:sub(stop);
+	local stop1,stop2,stop3;
+	if (cString:sub(1,1)==self.sTable) then
+		stop1=cString:find(self.eTable..cString:sub(2,2),3,true);
+		if (not stop1) then return nil; end	-- Missing data
+		return cString:sub(1,2),cString:sub(3,stop1-1),cString:sub(stop1+2);
 	end
-
-	local stop=cString:find(self.eTable..cString:sub(2,2))+2;	-- Find and include table endtag
-	return cString:sub(1,2),cString:sub(3,stop-3),cString:sub(stop);	-- Remove tags and return
+	stop1=cString:find(self.Entry,3,true); if (not stop1) then stop1=cString:len()+1; end	-- Virtual entry position
+	stop2=cString:find(self.sTable,3,true); if (not stop2) then stop2=cString:len()+1; end	-- Virtual entry position
+	stop3=cString:find(self.eTable,3,true); if (not stop3) then stop3=cString:len()+1; end	-- Virtual entry position
+	if (stop1>stop2) then stop1=stop2; end
+	if (stop1>stop3) then stop1=stop3; end
+	return cString:sub(1,2),cString:sub(3,stop1-1),cString:sub(stop1);
 end
 
-function DM.Table:DecompressV1(base,cString)
-	local eType,eName,dType,dData;
-
+function DM.Table:DecompressV1(base,cString,anon)
+--DM:Chat("Decompressing...");
 	while(cString:len()>0) do
-		eType,eName,cString=self:PullEntry(cString);
-		if (eType==self.Number) then eName=tonumber(eName); end
-
-		dType,dData,cString=self:PullNext(cString);
-		if (dType==self.Number) then dData=tonumber(dData);
-		elseif (dType==self.Bool) then if (dData=="true") then dData=true; else dData=false; end
-		elseif (dType==self.Nil) then dData=nil;
-		elseif (dType:sub(1,1)==self.sTable) then
-			base[eName]={};
-			self:DecompressV1(base[eName],dData);	-- dData is now without table-tags
+		local eType,eData=nil,nil;
+		local dType,dData=nil,nil;
+		if (anon) then
+			dType,dData,cString=self:PullEntry(cString);
+			dData=self:DecompressV1(base,dData);	-- dData is now without table-tags
+		else
+			eType,eData,cString=self:PullEntry(cString);		-- Entry name
+			if (eType==self.Number) then eData=tonumber(eData); end
+			dType,dData,cString=self:PullEntry(cString);		-- Entry data
+			if (dType==self.Number) then dData=tonumber(dData);
+			elseif (dType==self.Bool) then if (dData=="true") then dData=true; else dData=false; end
+			elseif (dType==self.Nil) then dData=nil;
+			elseif (dType:sub(1,1)==self.sTable) then
+				base[eData]={};
+				dData=self:DecompressV1(base[eData],dData);	-- dData is now without table-tags
+			end
 		end
 		if (not base) then return dData;
-		else base[eName]=dData; end
+		else
+			if (anon) then base=dData;
+			else base[eData]=dData; end
+		end
 	end
 	return base;
 end
 
-function DM.Table:Read(who,entry,base)
+-- "\1" 
+-- "\2" 
+-- "\3" 
+-- "\4" 
+--[[
+
+["Smilin' Slirk Brassknob"] d
+	Y 85.925
+	X 41.105
+	Zone The Storm Peaks - K3
+	Faction Neutral
+	Items e
+		item:35950:0:0:0:0:0:0 f
+			Name Sweet Potato Bread
+			Count -1
+		f
+		item:35954:0:0:0:0:0:0 f
+			Name Sweetened Goat's Milk
+			Count -1
+		f
+		item:33445:0:0:0:0:0:0 f
+			Name Honeymint Tea
+			Count -1
+		f
+		item:33449:0:0:0:0:0:0 f
+			Name Crusty Flatbread
+			Count -1
+		f
+		item:33444:0:0:0:0:0:0 f
+			Name Pungent Seal Whey
+			Count -1
+		f
+	e
+d",
+]]
+
+--	Entry ="\1", 
+--	sTable="\2", 
+--	eTable="\3", 
+
+
+function DM.Table:Read(who,entry,base,section)
+	local cache=self.Default[who].UseCache;
 	if (not who) then who="Default"; end								-- Using default settings
-	if (not base) then if (not self:Default[who].Base) then return nil; end base=self:Default[who].Base; end
+	if (not base) then
+		base=self.Default[who].Base;
+	elseif (section and base~=self.Default[who].Base[section]) then		-- Only cache for base data
+		cache=false
+	end
 	if (not base[entry]) then return nil; end							-- Entry does not exist
-	if (type(base[entry])~="string") then return base[entry]; end		-- It's uncompressed data
-	if (base[entry]:byte(1)~=self.Version) then return base[entry]; end	-- It's uncompressed data
-	local fnDecompress=self["DecompressV"..base[entry]:sub[2,2]];		-- Look for decompressor
+	if (type(base[entry])~="string") then			-- Not a proper entry
+		DM:Chat("Got "..type(base[entry]).." as entry");
+		return nil;
+	end
+--	if (base[entry]:byte(1)~=self.Version) then return base[entry]; end	-- It's uncompressed data
+	local fnDecompress=self["DecompressV"..base[entry]:sub(2,2)];		-- Look for decompressor
 	if (not fnDecompress) then return nil; end		-- We don't have a decompressor for this data
-	return fnDecompress(nil,base[entry]:sub(3));						-- Strip version
+	-- Not using cache, so decompress to scrap-book and return it
+	if (not cache) then
+		wipe(self.Scrap);
+		return DM:CopyTable(fnDecompress(self,self.Scrap,base[entry]:sub(3),true));		-- Strip version
+	end
+	if (section) then
+		if (not self.Default[who].Cache[section]) then self.Default[who].Cache[section]={}; end
+		cache=self.Default[who].Cache[section];
+	else
+		cache=self.Default[who].Cache;
+	end
+	-- Not decompressed yet, so decompress to cache and return it
+	if (not cache[entry]) then
+--		cache[entry]=DM:CopyTable(fnDecompress(self,self.Scrap,base[entry]:sub(3),true));
+		cache[entry]={};
+		fnDecompress(self,cache[entry],base[entry]:sub(3),true);
+	end
+	return cache[entry];
+end
+
+function DM.Table:PurgeCache(who)
+	wipe(self.Default[who].Cache);
+	collectgarbage("collect");
 end
 
 
@@ -306,34 +506,41 @@ DM.Code={};
 		byte=mod(code-pw[next]-seed,256);
 ]]
 function DM.Code:Protect(text,pw)
+	if (not pw or pw=="") then return text; end
 	local seed=0;
 	local pwlen=pw:len();
 	for i=1,pwlen do seed=seed+pw:byte(i); end
 	local code="";
 	local pi=1;
 	for i=1,text:len() do
-		code=code..string.char(math.mod(text:byte(i)+seed+pw[pi],256));
+		code=code..string.char(mod(text:byte(i)+(seed+pw:byte(pi)),256));
 		pi=pi+1; if (pi>pwlen) then pi=1; end
 	end
 	return self:Code(code);		-- Results in pure 8-bit, so we must code it
 end
 
 function DM.Code:Unprotect(code,pw)
+	if (not pw or pw=="") then return code; end
+	local decoded;
+	code,decoded=self:Decode(code);
+	if (decoded~=true) then return code; end
 	local seed=0;
 	local pwlen=pw:len();
 	for i=1,pwlen do seed=seed+pw:byte(i); end
 	local text="";
 	local pi=1;
-	for i=1,text:len() do
-		text=text..string.char(math.mod(code:byte(i)-pw[pi]-seed,256));
+	for i=1,code:len() do
+		local value=mod(code:byte(i)-(seed+pw:byte(pi)),256);
+		while(value<0) do value=value+256; end
+		text=text..string.char(value);
 		pi=pi+1; if (pi>pwlen) then pi=1; end
 	end
-	return self:Decode(text);
+	return text;
 end
 
 --[[
 	Text-code any three 8-bit values to four values ranging from 64-127
-	inclusive without using bit-library (relies on CPU float for speed)
+	inclusive.
 		composite=byte1*65536+byte2*256+byte3
 		char1=mod(composite,64)+64;
 		composite=composite/64;
@@ -349,39 +556,69 @@ end
 		char1=composite/256;
 ]]
 
+--	raw string bytes:
+--	11111111 22222222 33333333
+
+--	Binary coding: +64 >> 7
+--	111111110000000000000000
+--	000000002222222200000000
+--	000000000000000033333333
+
+-->	111111112222222233333333 -> com[0]=0333333d
+--	000000111111112222222233 -> com[1]=0222233c
+--	000000000000111111112222 -> com[2]=0112222b
+--	000000000000000000111111 -> com[3]=0111111a
 function DM.Code:Code(text)
 	text=text:len()..":"..text;
 	while (math.floor(text:len()/3)*3~=text:len()) do text=text.." "; end
 	local code="";
 	for i=1,text:len(),3 do
 		local com=bit.lshift(text:byte(i),16)+bit.lshift(text:byte(i+1),8)+text:byte(i+2);
-		code=code..string.char(math.mod(com,64)+64); com=bit.rshift(com,6);
-		code=code..string.char(math.mod(com,64)+64); com=bit.rshift(com,6);
-		code=code..string.char(math.mod(com,64)+64); com=bit.rshift(com,6);
+		code=code..string.char(mod(com,64)+64); com=bit.rshift(com,6);
+		code=code..string.char(mod(com,64)+64); com=bit.rshift(com,6);
+		code=code..string.char(mod(com,64)+64); com=bit.rshift(com,6);
 		code=code..string.char(com+64);
 	end
 	return code;
 end
 
+--	raw string bytes:
+--	0333333d 0222233c 0112222b 0111111a
+
+--	Binary coding:
+--	111111000000000000000000
+--	000000112222000000000000
+--	000000000000222233000000
+--	000000000000000000333333
+-->	111111112222222233333333 -> inp=33333333
+--	000000001111111122222222 -> inp=22222222 33333333
+--	000000000000000011111111 -> inp=11111111 22222222 33333333
+
+-- Return: text (string), decoded (true|false)
 function DM.Code:Decode(code)
 	local text="";
+	if (mod(code:len(),4)~=0) then return code,false; end
 	for i=1,code:len(),4 do
-		local com=bit.lshift(code:byte(i+3)-64,18);
+		local com;
+		com=bit.lshift(code:byte(i+3)-64,18);
 		com=com+bit.lshift(code:byte(i+2)-64,12);
 		com=com+bit.lshift(code:byte(i+1)-64,6);
 		com=com+(code:byte(i)-64);
-		local inp=string.char(math.mod(com,256)); com=bit.rshift(com,8);
-		inp=string.char(math.mod(com,256))..inp; com=bit.rshift(com,8);
-		inp=string.char(com)..inp;
+		local inp=string.char(mod(com,256)); com=bit.rshift(com,8);
+		inp=string.char(mod(com,256))..inp; com=bit.rshift(com,8);
+		inp=string.char(mod(com,256))..inp;
+--		inp=string.char(com)..inp;
 		text=text..inp;
 	end
 	local here=text:find(":");
-	local len=text:sub(1,here-1); len=tonumber(len);
-	len=text:len()-len;
-	if (len>2 or len<0) then return nil; end
-	if (len>0) then text=text:sub(1,text:len()-len); end
+	if (not here) then return code,false; end
+	local size=text:sub(1,here-1); size=tonumber(size);
+	if (not size or size<1) then return code,false; end
 	text=text:sub(here+1);
-	return text;
+	size=text:len()-size;
+	if (size>3 or size<0) then return "",true; end
+	if (size>0) then text=text:sub(1,text:len()-size); end
+	return text,true;
 end
 
 -- WoWnet
@@ -649,10 +886,19 @@ function DM.Net:Init()
 			return;
 		end
 	end
+	if (not self.TheFrameWorldMap) then
+		self.TheFrameWorldMap=CreateFrame("Frame","DuckMod-Net-Messager"..TV,WorldMapDetailFrame);
+		if (not self.TheFrameWorldMap) then
+			Chat("Could not create a DuckMod frame (2)",1);
+			return;
+		end
+	end
 	self.TheFrame:RegisterEvent("CHAT_MSG_ADDON");				-- Guild Addon channel
 	self.TheFrame:RegisterEvent("CHAT_MSG_CHANNEL");			-- WoWnet
-	self.TheFrame:SetScript("OnUpdate",DM.Net.HeartBeat);
+	self.TheFrame:RegisterEvent("CHAT_MSG_CHANNEL_NOTICE");		-- WoWnet
 	self.TheFrame:SetScript("OnEvent",DM.Net.OnEvent);
+	self.TheFrame:SetScript("OnUpdate",DM.Net.HeartBeat);
+	self.TheFrameWorldMap:SetScript("OnUpdate",DM.Net.HeartBeat);
 
 
 	-- As LUA random can be dodgy at times, it is recommended to make
@@ -672,10 +918,12 @@ end
 
 
 -- The heartbeat. The OnUpdate handler
-function DM.Net.HeartBeat()
-	local elapsed=arg1;
+function DM.Net.HeartBeat(frame,elapsed)
+--	local elapsed=arg1;
 	if (not elapsed) then return; end;
 	local self=DM.Net;
+
+	DM.MT:Next();		-- Run multi-threading
 
 	self.Timers.Last=self.Timers.Last+elapsed;					-- Update this
 	if (self.Timers.Last<DUCKNET_HEARTBEAT) then return; end;	-- Heartbeat is DUCKNET_HEARTBEAT seconds
@@ -758,7 +1006,7 @@ end
 
 
 -- An event has been received
-function DM.Net:OnEvent(event)
+function DM.Net:OnEvent(event,arg1,arg2,arg3,arg4,_,_,_,_,arg9)
 	if (event=="CHAT_MSG_ADDON") then
 		-- Check for WoWnet input
 		if (string.find(arg1,"wN")==1 and arg3=="WHISPER") then
@@ -788,6 +1036,11 @@ function DM.Net:OnEvent(event)
 --arg1	chat message
 --arg2	author
 --arg8	channel number
+--arg9	channel name without number (this is _sometimes_ in lowercase)
+	end
+	if (event=="CHAT_MSG_CHANNEL_NOTICE" and strlower(arg9)=="wownet") then
+		return;
+--arg1	"YOU_JOINED", "YOU_LEFT", or "THROTTLED"
 --arg9	channel name without number (this is _sometimes_ in lowercase)
 	end
 end
