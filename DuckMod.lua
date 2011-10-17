@@ -20,10 +20,11 @@ TestDebugTable={}
 
 local TV=2.07;
 -- 2.07
--- o WoWnet v0.01: Data transmission by Base64 coding for full digital
+-- + WoWnet v0.01: Data transmission by Base64 coding for full digital
 --   transmission. Supports multiple page reception.
+-- o WN Renderer
 -- 2.06
--- o Work on WoWnet progresses. Finally.
+-- + Work on WoWnet progresses. Finally.
 -- + Added simple generic multi-threading library methods
 -- + Fixed bug in cache that effectively switched it off
 -- 2.04
@@ -121,7 +122,8 @@ end
 
 -- Safe table-copy with optional merge (equal entries will be overwritten)
 function DM:CopyTable(t,new)
-	if (not t) then return nil; end
+	if (not t and not new) then return nil; end
+	if (not t) then t={}; end
 	if (not new) then new={}; end
 	local i,v;
 	for i,v in pairs(t) do
@@ -674,11 +676,12 @@ end
 -- contents -> Table for server contents
 function DM.WoWnet:Connect(cbSR,cbID)
 	local channel="WoWnet"
-	if (not JoinChannelByName(channel)) then
+--	if (not JoinChannelByName(channel)) then
+	if (not JoinTemporaryChannel(channel)) then
 		local count=1
 		self.Connected=nil;
 		DM:Chat("Someone has blocked the WoWnet channel on this server.");
-		while(not JoinChannelByName("WoWnet"..count)) do
+		while(not JoinTemporaryChannel("WoWnet"..count)) do
 			count=count+1;
 		end
 		channel="WoWnet"..count;
@@ -1087,6 +1090,9 @@ function DM.Net.HeartBeat(frame,elapsed)
 
 	DM.MT:Next();		-- Run multi-threading
 
+	-- Second pass of rendering
+	if (DM.RenderWnCounter==2) then DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining); end
+
 	self.Timers.Last=self.Timers.Last+elapsed;					-- Update this
 	if (self.Timers.Last<DUCKNET_HEARTBEAT) then return; end;	-- Heartbeat is DUCKNET_HEARTBEAT seconds
 	self.Timers.Last=0;											-- Restart
@@ -1427,7 +1433,7 @@ function DM.Net:ParseInput(prefix,text,instance)
 				end
 			end
 			if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Incoming data done"); end
-			self.DB[prefix].CallBack.RX(self.DB[prefix].Data);				-- Give table-pointer to registered addon
+			self.DB[prefix].CallBack.RX(self.DB[prefix].Data);					-- Give table-pointer to registered addon
 			self.DB[prefix].LastEntry=-1;										-- Nothing received yet
 			if (DuckMod_Present) then DuckMod_DN_ACT_TRANSMITDONE(instance); end
 
@@ -1987,7 +1993,7 @@ function DM.Net:DoTransmission(prefix,freeform)
 	local seq=1;
 	local linebreaks=0;
 	local longlines=0;
-	while(tp[seq]) do
+	while (tp[seq]) do
 		if (string.find(tp[seq],DUCKNET_LINEBREAKnative)) then
 			linebreaks=linebreaks+1;
 			DM:Chat("ERROR: Linebreak in line "..seq,1,0,0);
@@ -2037,6 +2043,687 @@ function DM.Net:SendSimple(prefix,name,thedata)
 	if (not self:NewLine(prefix)) then return nil; end
 	if (not self:AddEntry(prefix,name,thedata)) then return nil; end
 	return self:DoTransmission(prefix);
+end
+
+-- This is a bit simplified, as it does not have support for rendering
+-- more than one page at the time. This is however regarded a minor problem,
+-- as rendering a page is two-pass with a single update-frame inbetween.
+-- The rest of the code do however support multiple simultaneous pages.
+-- Check the return value for success. "nil" is fail. "true" is victory.
+-- If "nil", retry next update-frame.
+function DM:Render(frame,data)
+	if (DM.RU.Canvas) then return nil; end	-- Could not render at this time
+	DM.RU.Canvas=frame;
+	if (not frame.WnRenderData) then
+		frame.WnRenderData={};
+		frame.WnRenderData.Widget={};
+	end
+	DM.RenderWnCounter=0;
+	DM.RenderWnRemaining=data;
+	if (DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining)) then return true; end
+	-- Fail, so do fail-stuff
+	DM.RU.Canvas=nil;
+	DM.RenderWnCounter=1000;
+	return nil;
+end
+
+function DM:Render_2(canvas,remaining)
+	DM.RenderWnCounter=DM.RenderWnCounter+1;
+	canvas.WnRenderData.LockH=0;			-- Far left
+DM:Chat("Rendering...",1,0,1);
+	-- Do blocks
+	local entryname,param,data;
+--	entryname,param,data,remaining=DM.RU:PullSection(remaining);
+	entryname,param,remaining=DM.RU:PullSection(remaining);
+	if (entryname~="<wn>") then return; end			-- Wrong data-type waiting
+	DM.RU:InitPage(canvas);	-- This will work, as the FontString widget will be set properly before a new redraw
+	while (remaining~="") do
+		entryname,param,data,remaining=DM.RU:PullSection(remaining);
+		if (entryname=="<meta>") then
+DM:Chat("Setting up meta...",1,0,1);
+			local remM=data;						-- Do the meta data
+			while (remM~="") do
+				entryname,param,data,remM=DM.RU:PullSection(remM);
+				if (entryname=="<elements>") then
+					local remE=data;				-- Do the elements data
+					while (remE~="") do
+						entryname,param,data,remE=DM.RU:PullSection(remE);
+						-- Overlay parameters
+						canvas.WnRenderData.Meta["<elements>"][entryname]=DM.RU:Mix(param,canvas.WnRenderData.Meta["<elements>"][entryname]);
+						DM.RU:SetInterface(canvas,entryname,canvas.WnRenderData.Meta["<elements>"][entryname].Class)
+					end
+				elseif (entryname=="<font>") then
+					local name="Default";
+					if (param.name) then name=param.name; end
+					param.name=nil;
+					canvas.WnRenderData.Meta.font[name]=DM:CopyTable(param,canvas.WnRenderData.Meta.font[name]);
+				else
+					canvas.WnRenderData.Meta[entryname]=DM:CopyTable(param,canvas.WnRenderData.Meta[entryname]);
+				end
+			end
+		elseif (entryname=="<body>") then
+DM:Chat("Rendering body...",1,0,1);
+			-- Set the page standards from meta
+			if (canvas.WnRenderData.Meta["<page>"]) then
+				if (canvas.WnRenderData.Meta["<page>"].background) then
+					local bgwidget=DM.RU:GetWidget(canvas,"<none>",canvas.WnRenderData.Meta["<elements>"]["<img>"],nil);
+					bgwidget:SetDrawLayer("BACKGROUND");
+					bgwidget:ClearAllPoints();
+					bgwidget:SetPoint("TOPLEFT",canvas,"TOPLEFT");
+					bgwidget:SetPoint("BOTTOMRIGHT",canvas,"BOTTOMRIGHT");
+					local r,g,b,a=DM.RU:SplitColor(canvas.WnRenderData.Meta["<page>"].background);	-- Try to make RGBA
+					if (r) then bgwidget:SetTexture(r,g,b,a);							-- Single color
+					else bgwidget:SetTexture(canvas.WnRenderData.Meta["<page>"].background); end		-- Image-file
+					bgwidget:Show();
+				end
+			end
+			-- Do the contents from data
+			local remB=data;						-- Do the body data
+			while (remB~="") do
+				entryname,param,data,remB=DM.RU:PullSection(remB);
+				if (not entryname) then
+					DM:Chat("Unknown tag: ?",1);
+				elseif (entryname=="<set>") then
+					DM.RU:SetContext(canvas,param);	-- Non-visual elements
+				elseif (not canvas.WnRenderData.Meta["<elements>"][entryname]) then
+					DM:Chat("Unknown tag: "..entryname,1);
+				else
+					-- Visual elements
+					if (not canvas.WnRenderData.Meta["<elements>"][entryname]) then DM:Chat("Missing element <"..entryname..">",1); return; end
+					-- * Create a widget, or retrieve an old from a stack.
+					local widget=DM.RU:GetWidget(canvas,entryname,canvas.WnRenderData.Meta["<elements>"][entryname],param);
+					-- * Make parameters
+					local mix=DM.RU:Mix(param,canvas.WnRenderData.Meta["<elements>"][entryname]);
+					-- * Set provided data
+					local r,g,b,a=DM.RU:SplitColor(data);	-- Try to make an RGBA
+					if (not r) then
+						if (DM.RU:Flag(canvas,canvas.WnRenderData.Meta["<elements>"][entryname],"FontInstance")) then
+							DM.RU:SetFont(canvas,widget,mix);
+							widget:SetShadowOffset(0,0);
+						end
+DM:Chat(entryname);
+if (not canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData) then
+	DM:Chat("no setdata");
+end
+						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,data);	-- Simulate colon
+					else
+						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,r,g,b,a);	-- Simulate colon
+					end
+					-- * Anchor and size it
+					DM.RU:SetPosition(canvas,widget,mix);
+					-- * Show it
+					widget:Show();
+					canvas.WnRenderData.LastWidget=widget;
+				end
+			end
+			canvas:SetHeight(canvas.WnRenderData.Bottom+1);
+		else
+			-- Unknown block
+		end
+	end
+	DM.RenderWnCounter=DM.RenderWnCounter+1;
+	if (DM.RenderWnCounter==3) then DM.RU.Canvas=nil; end		-- Done with this canvas
+	return true;
+end
+
+
+-- Render Utilities
+DM.RU={
+	Class={
+		-- "=" denotes the named class
+		-- "x" denotes included entities
+		HaveContainer = 0x00000001, -- x x
+		UIObject      = 0x00000002, -- x x x x x
+		FontInstance  = 0x00000004, -- x   x
+		Region        = 0x00000008, -- x x x x x
+		LayeredRegion = 0x00000010, -- x x
+		FontString    = 0x00000020, -- =
+		Texture       = 0x00000040, --   =
+		Frame         = 0x00000080, --     x x =
+		EditBox       = 0x00000100, --     =
+		Button        = 0x00000200, --       =
+
+		WNCheckBox    = 0x40000000,
+		WNListBox     = 0x80000000,
+
+		FontString_   = 0x0000003F, -- Full FontString
+		Texture_      = 0x0000005B, -- Full Texture
+		Frame_        = 0x0000008A, -- Full Frame
+		EditBox_      = 0x0000018E, -- Full EditBox
+		Button_       = 0x0000028A, -- Full Button
+	},
+};
+
+
+-- Deviations to the default set-up of parameters are done by table overlay.
+DM.RU.DefaultMeta={
+	-- Create the building-blocks
+	["<page>"]={
+		background="#FFFFFFFF",								-- #AARRGGBB or filename
+--		package="",											-- A registered package
+	},
+	font={			-- EXCEPTION: Not bracketed, as it is not a tag-to-entry table
+		Default={
+			inheritSys="GameFontNormal",	-- Inherit a system font by name
+			size="14",
+			color="#FF000000",				-- Black opaque
+			flags="",
+		},
+		Medium={
+			size="22",
+		},
+		Big={
+			size="28",
+		},
+		Edit={
+			color="#FF505050",
+		},
+	},
+	-- Create the elements
+	["<elements>"]={
+		["<none>"]={							-- dummy
+			Class=0,
+		},
+		["<text>"]={
+			widget="FontString",				-- the widget
+			font="Default",
+			pad=3,
+			Class=DM.RU.Class.FontString_,
+		},
+		["<h1>"]={
+			widget="FontString",				-- the widget
+			font="Big",
+			pad=3,
+			Class=DM.RU.Class.FontString_,
+		},
+		["<h2>"]={
+			widget="FontString",				-- the widget
+			font="Medium",
+			pad=3,
+			Class=DM.RU.Class.FontString_,
+		},
+		["<img>"]={
+			widget="Texture",					-- the widget
+			pad=3,
+			Class=DM.RU.Class.Texture_,
+		},
+		["<edit>"]={
+			widget="EditBox",					-- the widget
+			inheritSys="DuckMod_EditText_01",	-- Inherit a frame
+			width=200,
+			height=25,
+			font="Edit",
+			pad=3,
+			Class=DM.RU.Class.EditBox_,
+		},
+		["<button>"]={
+			widget="Button",					-- the widget
+			inheritSys="UIPanelButtonTemplate2",
+			width=125,
+			height=22,
+			pad=3,
+			Class=DM.RU.Class.Button_,
+		},
+--		checkbox={
+--			widget="CheckBox",
+--		},
+--		listbox={
+--			widget="WnListBox",
+--			lines="10",					-- Number of visible lines
+--		},
+	},
+};
+
+-- Each canvas (frame) will have the following additional info:
+-- canvas
+--    WnRenderData
+--       Widget     - Storage for widget objects
+--       Meta       - Meta for this page. That is: compined default and provided.
+--       LastWidget - Last rendered widget
+--       Bottom     - Current end-of-page
+--       WnContext  - Current page context (<set>)
+--       LockH      - The current LockH while rendering
+
+-- Since each canvas keeps its own registry, multiple rendered pages is supported.
+function DM.RU:InitPage(canvas)
+	canvas.WnRenderData.Meta=DM:CopyTable(DM.RU.DefaultMeta);	-- Set default meta
+	canvas.WnRenderData.LastWidget=nil;				-- nil is the container frame, and true only for the first widget
+	canvas.WnRenderData.Bottom=0;					-- Bottom of reendered page
+	canvas.WnRenderData.WnContext={};				-- Current run-length context
+	canvas.WnRenderData.LockH=0;					-- Last locked horizontal
+	-- Clear all used elements
+	for wEntry,wTable in pairs(canvas.WnRenderData.Widget) do     -- All widget groups
+		for wwEntry,wwTable in pairs(wTable) do		-- All widgets within group
+			wwTable.Used=nil;						-- New page, so all unused
+			DM.RU:InitWidget(wwTable.widget);
+		end
+	end
+DM:Chat("Setting default interfaces...",1,0,1);
+	-- Set interface for all defaults
+	for nElement,dElement in pairs(canvas.WnRenderData.Meta["<elements>"]) do
+		self:SetInterface(canvas,nElement,dElement.Class)
+	end
+end
+
+function DM.RU:InitWidget(widget)
+	widget:Hide();					-- Hide all
+	widget:ClearAllPoints();
+	widget:SetHeight(0);
+	widget:SetWidth(0);
+end
+
+function DM.RU.PageButtonClicked(button)
+	if (not button) then
+		DM:Chat("No button provided");
+	else
+		local canvas=button.WnCanvas;
+		DM:Chat("Button clicked: "..button:GetName());
+		if (not button.WnParam) then						-- No params in XML
+			DM:Chat("No action associated with this button.");
+		elseif (button.WnParam.send) then					-- param "send" supplied
+			if (button.WnContext[button.WnParam.send]) then	-- It's send-data exists in the context
+				local val=button.WnContext[button.WnParam.send];
+				local transData={};
+				local stored=nil;
+				for wEntry,wTable in pairs(canvas.WnRenderData.Widget) do     -- All widget groups
+					local GetMyData=canvas.WnRenderData.Meta["<elements>"][button.WnElement].IF.GetData;
+					for wwEntry,wwTable in pairs(wTable) do		-- All widgets within group
+						if (canvas.WnRenderData.Meta["<elements>"][wwTable.widget.WnElement].IF.GetData) then
+							if (wwTable.Used and wwTable.widget.WnParam.id) then
+								transData[wwTable.widget.WnParam.id]=wwTable.widget[GetMyData](wwTable.widget);
+								stored=true;
+							end
+						end
+					end
+				end
+					-- We've got data, so send it
+				if (stored) then
+if (transData.feedText) then	-- The id for the editcontrol
+	DM:Chat("Data: "..transData.feedText);
+end
+				end
+			end
+		else
+			DM:Chat("No known action associated with this button.");
+		end
+	end
+end
+
+
+-- The following code enables context-code, like so:
+-- <set form="guild-application"/>  -- Starting form for guild application (multiple forms allowed)
+-- <edit req="1"/>                  -- Assigned to form "guild-application" (requires at least one character data)
+-- <button send="form"/>            -- Assigned to form "guild-application"
+-- <set form="guild-log-in"/>       -- Starting form for log-in, guild application form is done
+-- <edit ID="LIname"/>
+-- <edit ID="LIpass"/>
+-- <set form=""/>					-- No form active
+-- Following this, pressing the button will collect data from all active elements
+-- associated with the same context. In this case "form".
+function DM.RU:SetContext(canvas,param)
+	if (not param) then param={}; end
+	canvas.WnRenderData.WnContext=DM.RU:Mix(param,canvas.WnRenderData.WnContext);
+	for entry,eVal in pairs(canvas.WnRenderData.WnContext) do
+		if (eVal=="") then canvas.WnRenderData.WnContext[entry]=nil; end		-- Remove emptied parameters
+	end
+end
+
+function DM.RU:Mix(paramA,paramB)
+	if (not paramA) then paramA={}; end
+	local param=DM:CopyTable(paramB);		-- Make copy
+	return DM:CopyTable(paramA,param);		-- Merge and return
+end
+
+-- Handle "glue" and "flow"
+function DM.RU:SetPosition(canvas,widget,param)
+	if (not param) then param={}; end
+	local glue,flow,align,pad=param.glue,param.flow,param.align,param.pad;		-- Make copies
+	local bottomtype="stack";
+
+	widget:ClearAllPoints();
+
+	local hSet,wSet;
+	if (param.width) then
+		local value=tostring(param.width);
+		if (value:sub(-1)=="%") then
+			value=tonumber(value:sub(1,-2));			-- Get the percentage
+			value=(canvas:GetWidth()/100)*value;	-- Convert to points
+		end
+DM:Chat("Width: "..tonumber(value));
+		widget:SetWidth(tonumber(value));				-- Set provided value directly
+		wSet=true;
+	end
+	if (param.height) then
+		widget:SetHeight(tonumber(param.height));		-- Set provided value directly
+		hSet=true;
+	end
+
+	-- Check provided information
+	if (not glue and not flow and not align) then align="LEFT"; end
+	if (not align) then align=""; end
+	if (not glue) then glue=""; end
+	if (not flow) then flow=""; end
+	if (not pad) then pad=0; end
+	align=align:upper();
+	glue=glue:upper();
+	flow=flow:upper();
+
+DM:Chat("g:"..glue.." f:"..flow.." a:"..align);
+
+	-- Set text adjustment. "align" has presedence as it does that for positioning as well.
+	local adjust;
+	adjust="LEFT";		-- Since we are left-to-right readers
+	if (flow=="LEFT") then adjust="RIGHT"; end
+	if (flow=="DOWN") then adjust="CENTER"; end
+	if (align=="LEFT" or align=="RIGHT" or align=="CENTER") then adjust=align; end
+
+	local lockside,bottomadd="LEFT",pad;
+	-- Align with canvas in stead of widget
+	if (align=="LEFT" or (not canvas.WnRenderData.LastWidget and glue=="LEFT")) then
+		widget:SetPoint("TOPLEFT",canvas,"TOPLEFT",0,0-(canvas.WnRenderData.Bottom+bottomadd));
+		canvas.WnRenderData.LockH=0;
+		adjust="LEFT";
+	elseif (align=="RIGHT" or (not canvas.WnRenderData.LastWidget and glue=="RIGHT")) then
+		widget:SetPoint("TOPRIGHT",canvas,"TOPRIGHT",0,0-(canvas.WnRenderData.Bottom+bottomadd));
+		lockside="RIGHT";
+		canvas.WnRenderData.LockH=canvas:GetWidth()-0;
+		adjust="RIGHT";
+	elseif (align=="CENTER" or (not canvas.WnRenderData.LastWidget and glue=="TOP")) then
+		widget:SetPoint("TOP",canvas,"TOP",0,0-(canvas.WnRenderData.Bottom+bottomadd));
+		lockside="CENTER";
+		canvas.WnRenderData.LockH=canvas:GetWidth()/2;
+		adjust="CENTER";
+	elseif (glue=="LEFT") then
+		if (flow=="DOWN") then widget:SetPoint("TOPLEFT",canvas.WnRenderData.LastWidget,"TOPRIGHT",pad,0); bottomtype="TOPDOWN";
+		elseif (flow=="UP") then widget:SetPoint("BOTTOMLEFT",canvas.WnRenderData.LastWidget,"BOTTOMRIGHT",pad,0); bottomtype="BOTTOMUP";
+		else widget:SetPoint("LEFT",canvas.WnRenderData.LastWidget,"RIGHT",pad,0); bottomtype="CENTERSIDE"; end
+		adjust="LEFT";
+		bottomadd=0;
+	elseif (glue=="RIGHT") then
+		if (flow=="DOWN") then widget:SetPoint("TOPRIGHT",canvas.WnRenderData.LastWidget,"TOPLEFT",-pad,0); bottomtype="TOPDOWN";
+		elseif (flow=="UP") then widget:SetPoint("BOTTOMRIGHT",canvas.WnRenderData.LastWidget,"BOTTOMLEFT",-pad,0); bottomtype="BOTTOMUP";
+		else widget:SetPoint("RIGHT",canvas.WnRenderData.LastWidget,"LEFT",-pad,0); bottomtype="CENTERSIDE"; end
+		lockside="RIGHT";
+		adjust="RIGHT";
+		bottomadd=0;
+	elseif (glue=="TOP") then
+		if (flow=="DOWN") then widget:SetPoint("TOP",canvas.WnRenderData.LastWidget,"BOTTOM",0,0-pad); lockside="CENTER"; adjust="CENTER";
+		elseif (flow=="LEFT") then widget:SetPoint("TOPRIGHT",canvas.WnRenderData.LastWidget,"BOTTOMRIGHT",0,0-pad); lockside="RIGHT"; adjust="RIGHT";
+		else widget:SetPoint("TOPLEFT",canvas.WnRenderData.LastWidget,"BOTTOMLEFT",0,0-pad); lockside="LEFT"; adjust="LEFT"; end
+	end
+	if (widget.SetJustifyV) then widget:SetJustifyV("TOP"); end
+	if (widget.SetJustifyH) then widget:SetJustifyH(adjust); end
+
+	-- Expand widget if text is bigger than said area
+	if (not wSet and widget.GetStringWidth) then
+DM:Chat("here...");
+		local _,step,_=widget:GetFont();
+		local cWidth=canvas:GetWidth();
+		local sWidth=widget:GetStringWidth();
+
+		if (lockside=="LEFT") then
+			canvas.WnRenderData.LockH=canvas.WnRenderData.LockH+pad;
+			if (canvas.WnRenderData.LockH+sWidth>=cWidth) then widget:SetWidth(cWidth-canvas.WnRenderData.LockH);
+			elseif (canvas.WnRenderData.LockH+sWidth+step>=cWidth) then widget:SetWidth(cWidth-canvas.WnRenderData.LockH-step);
+			else
+				--widget:SetWidth(sWidth);
+			end
+		elseif (lockside=="RIGHT") then
+			canvas.WnRenderData.LockH=canvas.WnRenderData.LockH-pad;
+			if (canvas.WnRenderData.LockH-sWidth<=0) then widget:SetWidth(canvas.WnRenderData.LockH);
+			elseif (canvas.WnRenderData.LockH-(sWidth+step)<=0) then widget:SetWidth(canvas.WnRenderData.LockH-step);
+			else
+				--widget:SetWidth(sWidth+step);
+			end
+		elseif (lockside=="CENTER") then
+			if (canvas.WnRenderData.LockH-(sWidth/2)<=0) then widget:SetWidth(cWidth);
+			else widget:SetWidth(sWidth+step); end
+		end
+	end
+
+
+	if (not hSet and widget.GetStringHeight) then
+		widget:SetHeight(widget:GetStringHeight()+1);
+	end
+
+	-- Set new lock-side
+	if (lockside=="LEFT") then
+		canvas.WnRenderData.LockH=canvas.WnRenderData.LockH+widget:GetWidth();
+	elseif (lockside=="RIGHT") then
+		canvas.WnRenderData.LockH=canvas.WnRenderData.LockH-widget:GetWidth();
+	elseif (lockside=="CENTER") then
+		-- Assume continuous position, even though that may be wrong when the center is center of an element
+	end
+
+	-- Set the visually lowest point of the rendering
+	canvas.WnRenderData.Bottom=canvas.WnRenderData.Bottom+bottomadd;		-- Add any vertical padding
+	if (bottomtype=="stack") then
+		canvas.WnRenderData.Bottom=canvas.WnRenderData.Bottom+widget:GetHeight();
+	elseif (bottomtype=="TOPDOWN") then
+		if (widget:GetHeight()>canvas.WnRenderData.LastWidget:GetHeight()) then
+			canvas.WnRenderData.Bottom=canvas.WnRenderData.Bottom+(widget:GetHeight()-canvas.WnRenderData.LastWidget:GetHeight());
+		end
+	elseif (bottomtype=="CENTERSIDE") then
+		if (widget:GetHeight()>canvas.WnRenderData.LastWidget:GetHeight()) then
+			canvas.WnRenderData.Bottom=canvas.WnRenderData.Bottom+(widget:GetHeight()-canvas.WnRenderData.LastWidget:GetHeight())/2;
+		end
+	end
+end
+
+-- Find an unused widget or create a new
+function DM.RU:GetWidget(canvas,element,widget,param)
+	if (not param) then param={}; end
+	local typename=widget.widget;
+	if (not canvas.WnRenderData.Widget[typename]) then canvas.WnRenderData.Widget[typename]={}; end
+	local TheName=nil;
+	for wEntry,wTable in pairs(canvas.WnRenderData.Widget[typename]) do
+		if (not wTable.Used) then
+			TheName=wEntry;
+		end
+	end
+
+	-- Create new if needed
+	if (not TheName) then
+		TheName="WoWnet-widget-"..DM:Random(0,1000000);		-- Fractional million
+		canvas.WnRenderData.Widget[typename][TheName]={};
+		if (self:Flag(canvas,widget,"HaveContainer")) then
+			local creator="Create"..typename;
+			canvas.WnRenderData.Widget[typename][TheName].widget=canvas[creator](canvas,TheName);	-- Simulate colon
+		else
+			canvas.WnRenderData.Widget[typename][TheName].widget=CreateFrame(typename,TheName,canvas,widget.inheritSys);
+		end
+	else
+		canvas.WnRenderData.Widget[typename][TheName].widget:SetParent(canvas);			-- In case it was moved earlier
+		wipe(canvas.WnRenderData.Widget[typename][TheName].widget.WnContext);				-- Clear the context for the element
+		canvas.WnRenderData.Widget[typename][TheName].widget.WnContext=nil;				-- And throw it away
+		if (canvas.WnRenderData.Widget[typename][TheName].widget.WnParam) then
+			wipe(canvas.WnRenderData.Widget[typename][TheName].widget.WnParam);				-- Clear the parameters for the element
+			canvas.WnRenderData.Widget[typename][TheName].widget.WnParam=nil;					-- And throw it away
+		end
+	end
+	-- Set up the widget a bit
+	canvas.WnRenderData.Widget[typename][TheName].widget.WnElement=element;
+	if (canvas.WnRenderData.Widget[typename][TheName].widget.SetDrawLayer) then
+		canvas.WnRenderData.Widget[typename][TheName].widget:SetDrawLayer("ARTWORK");
+	end
+	canvas.WnRenderData.Widget[typename][TheName].widget.WnContext=DM:CopyTable(canvas.WnRenderData.WnContext);	-- Insert current context in the element
+	canvas.WnRenderData.Widget[typename][TheName].Used=true;
+	canvas.WnRenderData.Widget[typename][TheName].widget.WnParam=DM:CopyTable(param);
+	canvas.WnRenderData.Widget[typename][TheName].widget.WnCanvas=canvas;
+	-- Set handlers
+	if (self:Flag(canvas,widget,"Button")) then
+		canvas.WnRenderData.Widget[typename][TheName].widget:SetScript("OnClick",DM.RU.PageButtonClicked);
+	end
+
+	DM.RU:InitWidget(canvas.WnRenderData.Widget[typename][TheName].widget);
+
+	return canvas.WnRenderData.Widget[typename][TheName].widget;
+end
+
+-- This function takes a parameter table, and assumes that it inherits
+-- all the way back to default.
+function DM.RU:SetFont(canvas,widget,param)
+	local face,height,flags="",0,"";
+	if (not param) then param={}; end
+
+	-- Start with default
+	face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font.Default)
+
+if (param.font) then
+	DM:Chat(param.font);
+end
+	if (param.font and canvas.WnRenderData.Meta.font[param.font]) then			-- Font supplied and it exists
+		face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font[param.font]);
+	end
+	widget:SetFont(face,tonumber(height),flags);
+end
+
+function DM.RU:MakeFont(widget,face,height,flags,font)
+	if (not font) then return face,height,flags; end
+
+	if (font.inheritSys) then										-- Inherits from game font-object
+		widget:SetFontObject(font.inheritSys);						-- Set base font from Default
+		face,height,flags=widget:GetFont();							-- Get the data for it
+	elseif (font.inherits and DM.RU.Meta.font[font.inherits]) then	-- Inherits from some other font
+		face,height,flags=DM.RU:MakeFont(face,height,flags,canvas.WnRenderData.Meta.font[font.inherits]);
+	end
+	if (font.file) then face=font.file; end
+	if (font.size) then height=font.size; end
+	if (font.flags) then flags=font.flags; end
+	if (font.color) then
+		local r,g,b,a=self:SplitColor(font.color);
+		if (r) then widget:SetTextColor(r,g,b,a); end
+	end
+DM:Chat(height);
+	return face,height,flags;
+end
+
+function DM.RU:SplitColor(color)
+	local r,g,b,a;
+	if (color:find("#",1,true)==1) then
+		color=color:sub(2);
+		if (color:len()==8) then		-- Standard full-resolution mode 0-255
+			a=tonumber("0x"..color:sub(1,2)); if (a>0) then a=255/a; end
+			r=tonumber("0x"..color:sub(3,4)); if (r>0) then r=255/r; end
+			g=tonumber("0x"..color:sub(5,6)); if (g>0) then g=255/g; end
+			b=tonumber("0x"..color:sub(7,8)); if (b>0) then b=255/b; end
+		elseif (color:len()==4) then	-- Simple html-mode 0-15
+			a=tonumber("0x"..color:sub(1,1)); if (a>0) then a=15/a; end
+			r=tonumber("0x"..color:sub(2,2)); if (r>0) then r=15/r; end
+			g=tonumber("0x"..color:sub(3,3)); if (g>0) then g=15/g; end
+			b=tonumber("0x"..color:sub(4,4)); if (b>0) then b=15/b; end
+		end
+	end
+	return r,g,b,a;
+end
+
+function DM.RU:SetInterface(canvas,element,class)
+	if (not canvas.WnRenderData.Meta["<elements>"][element]) then return; end
+--DM:Chat("IF: "..element);
+	canvas.WnRenderData.Meta["<elements>"][element].Class=class;
+	if (not canvas.WnRenderData.Meta["<elements>"][element].IF) then canvas.WnRenderData.Meta["<elements>"][element].IF={}; end
+	-- Check for implied interfaces
+	if (not bit.band(class,DM.RU.Class.UIObject)) then DM:Chat("<"..element.."> does not have UIObject",1); return; end
+	if (not bit.band(class,DM.RU.Class.Region)) then DM:Chat("<"..element.."> does not have Region",1); return; end
+	-- Clear the common programming interface
+	canvas.WnRenderData.Meta["<elements>"][element].IF.SetData=nil;		-- No method
+	canvas.WnRenderData.Meta["<elements>"][element].IF.GetData=nil;		-- No method
+
+	-- Set the common programming interface
+	if (bit.band(class,DM.RU.Class.FontInstance)==DM.RU.Class.FontInstance) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
+		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="GetText";
+	elseif (bit.band(class,DM.RU.Class.Button)==DM.RU.Class.Button) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
+		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="GetText";
+	elseif (bit.band(class,DM.RU.Class.Texture)==DM.RU.Class.Texture) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetTexture";
+	end
+end
+
+function DM.RU:Flag(canvas,widget,flag)
+	if (bit.band(widget.Class,DM.RU.Class[flag])==DM.RU.Class[flag]) then
+		return true;
+	end
+	return nil;
+end
+
+
+
+-- * The section must start at the first character
+-- * Does NOT support nested same-type top-tags
+-- Returns:
+--   Section name: String. Contents of first tag without parameters
+--     Parameters: Table. All parameters where entry is param-name and value is string value
+--           Data: The entire contents between starting and ending tags
+--      Remaining: The remainder of the data-block
+function DM.RU:PullSection(data)
+DM:Chat("PullSection...",1,0,1);
+	if (not data:find("<",1,true)==1) then return; end	-- No start-tag present
+	if (not data:find(">",1,true)) then return; end		-- No tag present
+DM:Chat("- got tag(s)",1,0,1);
+	local param=nil;									-- nil it in case there are none
+	local remaining;
+	local locA=data:find(">",1,true);
+	local entryName=data:sub(1,locA);					-- Get tag with <
+	data=data:sub(locA+1);								-- Get data without tag
+	if (entryName:sub(entryName:len()-1)=="/>") then	-- Tag terminates itself
+		remaining=data;									-- Copy from data that is correct from last change
+		data="";										-- Set no data
+	else
+DM:Chat("- got tag "..entryName.." with data",1,0,1);
+		local extryName;
+		if (entryName:find(" ",1,true)) then			-- tag has spaces (thus also parameters)
+			locA=entryName:find(" ",1,true);			-- Find first space
+			extryName="</"..entryName:sub(2,locA-1)..">";	-- Make ending tag before first space
+		else
+			extryName="</"..entryName:sub(2);			-- Make ending tag
+		end
+DM:Chat("- created "..extryName.." as ending tag",1,0,1);
+		locA=data:find(extryName,1,true);				-- Find the ending tag
+		if (not locA) then return; end					-- ERROR: No closing tag
+DM:Chat("- found "..extryName.." in data",1,0,1);
+		remaining=data:sub(locA+extryName:len()+1);		-- Copy from termination and out
+		data=data:sub(1,locA-1);						-- Keep only enclosed data
+	end
+	-- Clean up entryName (may still have parameters)
+	entryName=entryName:sub(2,entryName:len()-1);		-- Cut "<" and ">"
+	if (entryName:sub(-1)=="/") then					-- Self-terminating
+		entryName=entryName:sub(1,-2);					-- Cut last "/"
+	end
+	-- Here: data OK, remaining OK, entryName /w parameters and no < and >.
+
+	locA=entryName:find(" ",1,true);
+	if (locA) then										-- tag has spaces (thus also parameters)
+		param={};
+		-- Seek, don't split, as spaces may be in parameters' data too.
+		local work=entryName:sub(locA);					-- Cut tag
+		entryName=entryName:sub(1,locA-1);				-- Cut the first space
+		while (work~="") do
+			local pName,pData;
+			pName,pData,work=self:PullParameter(work);	-- Pull one and save the rest
+			if (pName) then param[pName]=pData; end		-- Save parameter
+		end
+	end
+	entryName="<"..strtrim(entryName)..">";		-- Cut rubbish
+	data=strtrim(data);							-- Cut rubbish
+	remaining=strtrim(remaining);				-- Cut rubbish
+DM:Chat("<- Done: "..entryName,1,0,1);
+	return entryName,param,data,remaining;		-- Return the distilled data
+end
+
+--face="/Files/Fonts/Somewhere/uglyfont.ttf" size="12" color="#AARRGGBB"
+function DM.RU:PullParameter(data)
+	data=strtrim(data);
+	local loc=data:find("=\"",1,true);
+	if (not loc) then return nil,nil,""; end
+	local param=data:sub(1,loc-1);
+	data=data:sub(loc+2);
+	loc=data:find("\"",1,true);
+	local value=data:sub(1,loc-1);
+	data=data:sub(loc+1);
+	data=strtrim(data);
+	return param:lower(),value,data;
 end
 
 
