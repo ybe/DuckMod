@@ -206,7 +206,7 @@ end
 --	frame.DMTheList[index].DB[entry]=value;
 --end
 
-function DuckWidget.ListBox.Redraw(frame)
+function DuckWidget.ListBox.Redraw(frame,remake)
 	if (frame.DMEntries==nil) then return; end
 	if (not frame.DMTheList) then frame.DMTheList={}; end				-- No list
 	local i;
@@ -214,8 +214,8 @@ function DuckWidget.ListBox.Redraw(frame)
 	local fName=frame:GetName();
 
 	-- Visible area not populated by buttons, so create all buttons
-	if (not _G[fName.."_Entry"..visible]) then
-		-- Create all buttons
+	if (not _G[fName.."_Entry"..visible] or remake) then
+		-- Create and place all buttons
 		i=2;
 		while (i<=visible) do
 			local button=_G[fName.."_Entry"..i];
@@ -273,7 +273,7 @@ function DuckWidget.ListBox.SliderChanged(frame)
 end
 
 function DuckWidget.ListBox.SendEvent(button,event)
-	local parent=button:GetParent():GetParent();
+	local parent=button:GetParent();
 	local handler=parent:GetScript("OnEvent");
 	if (not handler) then return; end
 	handler(parent,event,button:GetParent(),button.ListIndex);

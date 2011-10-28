@@ -14,7 +14,7 @@
 		</ThumbTexture>
 		<Scripts>
 			<OnLoad>self:SetValueStep(1);</OnLoad>
-			<OnValueChanged>DuckWidget.ListBox.SliderChanged(self,delta);</OnValueChanged>
+			<OnValueChanged>DuckWidget.ListBox.SliderChanged(self:GetParent(),delta);</OnValueChanged>
 		</Scripts>
 	</Slider>
 

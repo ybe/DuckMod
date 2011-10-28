@@ -18,7 +18,9 @@
 
 TestDebugTable={}
 
-local TV=2.07;
+local TV=2.0701;
+-- 2.0701
+-- + Various minor changes, and version change for conflict detection
 -- 2.07
 -- + WoWnet v0.01: Data transmission by Base64 coding for full digital
 --   transmission. Supports multiple page reception.
@@ -70,7 +72,7 @@ local DUCKNET_NEG_STOPPED = -1;
 local DUCKNET_NEG_RUNNING = 0;
 local DUCKNET_NEG_DONE = 5;
 
-local DUCKNET_HEARTBEAT = 0.3;
+local DUCKNET_HEARTBEAT = 0.2;
 local DUCKNET_TRANS_STOP = 0;
 local DUCKNET_TRANS_START = 1;
 
@@ -118,6 +120,27 @@ function DM:Random(bottom,top)
 	num=num+bottom;					-- Set floor
 	return num;
 end
+
+-- Global time-keeping
+function DM:Time()
+	if (self.TimeOffset) then return time()-self.TimeOffset; end
+	return time();
+end
+
+function DM:TimeDiff(diff)
+	if (not diff) then
+		-- Get data
+		local h=GetGameTime();		-- Hours
+		local t=date("*t");			-- Computer-date
+		diff=t.hour-h;				-- - Diff
+		if (diff>11) then diff=diff-24;
+		elseif (diff<-11) then diff=diff+24;
+		end
+	end
+	self.TimeOffset=diff*3600;
+--	("Time-offset to subtract is: "..diff,0,1,1);
+end
+
 
 
 -- Safe table-copy with optional merge (equal entries will be overwritten)
@@ -637,6 +660,7 @@ DM.WoWnet={
 		LoopBack=nil,			-- Running in loopback mode. i.e playing the madman (talk to self)
 		LastPubOut=nil,			-- Last data sent to public channel
 		cbSearchResult=nil,		-- Callback: Incoming search-results
+		ResolveWait=nil,		-- Stuff waiting WoWnet resolving
 	},
 	LinkColour="ffff8080";
 };
@@ -802,6 +826,11 @@ function DM.WoWnet:Input(sender,text)
 	elseif (text:find("goloc:",1,true)==1) then
 --		DM:Chat("Location request: "..text:sub(7),1);
 		self.Session:HandleAddress(sender,text:sub(7));
+	elseif (text:find("ping:",1,true)==1) then
+--		DM:Chat("Ping request: "..text:sub(7),1);
+		if (WoWnetServer[text:sub(7)]) then
+			DM.WoWnet.Session:SendData(sender,"ping",{Request=text});
+		end
 	end
 end
 
@@ -830,7 +859,12 @@ function DM.WoWnet.Session:HandleAddress(sender,text)
 	if (not WoWnetServer[who][loc]["SECTIONDATA"]) then
 		return;
 	end
-	self:SendData(sender,text,WoWnetServer[who][loc]["SECTIONDATA"])
+	local theData=DM:CopyTable(WoWnetServer[who][loc]["SECTIONDATA"]);
+	theData.Meta={
+		Server=who,
+		Location=text,		-- As it would be specified in the edit-box
+	};
+	self:SendData(sender,text,theData);
 end
 
 function DM.WoWnet.Session:Search(data)
@@ -854,6 +888,37 @@ function DM.WoWnet.Session:HandleLink(link)
 		DM.WoWnet.Session:GoTo(lAddress);
 	end
 end
+
+function DM.WoWnet.Session:InDataIntercept(prefix,user,sender,data)
+	if (not user) then return nil; end
+	-- Decode to a table, as outer table has not been coded
+	for entry,_ in pairs(data) do
+		data[entry]=DM.Table:GetType({},100)..DM.Code:Decode(data[entry])..DM.Table.eTable..string.char(100);	-- Decode
+		data[entry]=DM.Table:DecompressV1({},data[entry],true);	-- Unpack
+	end
+	-- Check special-handling data
+	if (data.WNFLAGMSGPING and data.WNFLAGMSGPING==DM.WoWnet.Session.ResolveWait.Server) then
+		if (data.WNFLAGMSGTOON) then
+			DM.WoWnet.Session.ResolveWait.PipeToon=data.WNFLAGMSGTOON;
+			data.WNFLAGMSGPING=nil;
+			data.WNFLAGMSGTOON=nil;
+		end
+		return true;
+	end
+
+	-- Form-data received
+	local entry,eTable=next(data);
+	if (entry:find("formdata:")==1) then
+		if (not CrawlerIncoming[entry]) then CrawlerIncoming[entry]={}; end
+		if (not CrawlerIncoming[entry][user]) then CrawlerIncoming[entry][user]={}; end
+		-- Merge new incoming data
+		CrawlerIncoming[entry][user]=DuckLib:CopyTable(eTable,CrawlerIncoming[entry][user]);
+	end
+
+	data.CallBack.RX(data,sender);	-- Give table-pointer to registered WoWnet addon
+	return true;
+end
+
 
 -- receiver -> The real user to send the message to
 -- host -> The host to request a session with ("user" may be an alt of the host)
@@ -1031,27 +1096,19 @@ function DM.Net:NegWindow()
 	return DUCKNET_NEG_DONE;
 end
 
-function DM.Net:ConnectGeneric(channel,password)
-	if (not JoinChannelByName(channel)) then self.Connected=nil; else self.Connected=true; end
-	if (self.Connected) then
-	else
-	end
-	return self.Connected;
-end
-
 -- Set up for handling
 function DM.Net:Init()
 	if (not self.TheFrame) then
 		self.TheFrame=CreateFrame("Frame","DuckMod-Net-Messager"..TV,UIParent);
 		if (not self.TheFrame) then
-			Chat("Could not create a DuckMod frame",1);
+			DM:Chat("Could not create a DuckMod frame",1);
 			return;
 		end
 	end
 	if (not self.TheFrameWorldMap) then
 		self.TheFrameWorldMap=CreateFrame("Frame","DuckMod-Net-Messager"..TV,WorldMapDetailFrame);
 		if (not self.TheFrameWorldMap) then
-			Chat("Could not create a DuckMod frame (2)",1);
+			DM:Chat("Could not create a DuckMod frame (2)",1);
 			return;
 		end
 	end
@@ -1097,6 +1154,37 @@ function DM.Net.HeartBeat(frame,elapsed)
 	if (self.Timers.Last<DUCKNET_HEARTBEAT) then return; end;	-- Heartbeat is DUCKNET_HEARTBEAT seconds
 	self.Timers.Last=0;											-- Restart
 
+	-- WoWnet data waiting for resolving
+	if (DM.WoWnet.Session.ResolveWait) then
+		if (DM.WoWnet.Session.ResolveWait.Table and DM.WoWnet.Session.ResolveWait.Server and DM.WoWnet.Session.ResolveWait.PipeToon) then
+			if (DM.WoWnet.Session:SendData(DM.WoWnet.Session.ResolveWait.PipeToon,"formdata:"..DM.WoWnet.Session.ResolveWait.Server,DM.WoWnet.Session.ResolveWait.Table)) then
+				wipe(DM.WoWnet.Session.ResolveWait); DM.WoWnet.Session.ResolveWait=nil;	-- Clear if ok
+			end
+		end
+	end
+
+--value._DATABASEKEEPERID=tab._DATABASEKEEPERID;	-- Insert the id
+--value._DATABASEKEEPERMARKER=tab._DATABASEKEEPERMARKER..DM.Net.Split1..key;
+	-- Database sync queue
+	if (next(DM.Database.SQ) and DM.Net:Idle(DM.Database.SQ[1].tab._DATABASEKEEPERID)) then
+		local sent=nil;
+		-- Send data
+		if (type(DM.Database.SQ[1].tab[DM.Database.SQ[1].key])=="table") then
+			sent=DM.Database:SendTable(DM.Database.SQ[1].tab,DM.Database.SQ[1].key);
+		else
+			sent=DM.Database:SendSingle(DM.Database.SQ[1].tab,DM.Database.SQ[1].key);
+		end
+		if (sent) then
+			-- Remove entry
+			local index=1;
+			while (DM.Database.SQ[index+1]) do
+				DM.Database.SQ[index]=DM.Database.SQ[index+1];
+				index=index+1;
+			end
+			wipe(DM.Database.SQ[index]); DM.Database.SQ[index]=nil;
+		end
+	end
+
 	local now=time();
 	for k,v in pairs(self.DB) do
 		if (v.Alive) then										-- An alive-stamp exists (wownet)
@@ -1140,7 +1228,19 @@ function DM.Net:HeartBeatCycle(prefix)
 					if (IWon) then DM:Chat(prefix.." DEBUG: Negotiation won");
 					else DM:Chat(prefix.." DEBUG: Negotiation lost"); end
 				end
-				self.DB[prefix].CallBack.NegotiateWon(IWon,self.DB[prefix].Negotiate.StartMarker);		-- Tell the calling addon if it won or not
+				if (self.DB[prefix].Negotiate.StartMarker:find("Database",1,true)==1) then
+					if (IWon) then
+						if (self.DB[prefix].Negotiate.StartMarker:find("DatabaseF",1,true)==1) then
+							local _,id,_=DM.Database:SplitMarker(self.DB[prefix].Negotiate.StartMarker);
+							DM.Database:PerformSync(id);
+						elseif (self.DB[prefix].Negotiate.StartMarker:find("DatabaseT",1,true)==1) then
+--							DM.Database
+						elseif (self.DB[prefix].Negotiate.StartMarker:find("DatabaseE",1,true)==1) then
+						end
+					end
+				else
+					self.DB[prefix].CallBack.NegotiateWon(IWon,self.DB[prefix].Negotiate.StartMarker);		-- Tell the calling addon if it won or not
+				end
 				if (DuckMod_Present) then DuckMod_DN_NegotiationComplete(IWon); end
 			elseif (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Negotiation done");
 			end
@@ -1148,6 +1248,7 @@ function DM.Net:HeartBeatCycle(prefix)
 		end
 	end
 
+	-- Handle transmission
 	if (self.DB[prefix].Transmitting>DUCKNET_TRANS_STOP) then	-- It's transmitting
 		if (self.DB[prefix].TransmitDelay>0) then
 			self.DB[prefix].TransmitDelay=self.DB[prefix].TransmitDelay-DUCKNET_HEARTBEAT;
@@ -1209,7 +1310,7 @@ function DM.Net:OnEvent(event,arg1,arg2,arg3,arg4,_,_,_,_,arg9)
 		local instance=nil;
 		if (DuckMod_Present) then instance=DuckMod_DN_CHAT_MSG_ADDON(arg1,arg2,arg3,arg4); else instance=arg4; end
 		if (not DM.Net:Valid(arg1,arg3)) then return; end;					-- Quick way out without further function-calls - which ParseInput will do
-		DM.Net:ParseInput(arg1,arg2,instance);								-- It's from a registered channel, so attempt to decode it
+		DM.Net:ParseInput(arg1,arg2,arg4);								-- It's from a registered channel, so attempt to decode it
 		return;
 	end
 	if (event=="CHAT_MSG_CHANNEL" and strlower(arg9:sub(1,6))=="wownet") then
@@ -1224,7 +1325,7 @@ function DM.Net:OnEvent(event,arg1,arg2,arg3,arg4,_,_,_,_,arg9)
 --arg8	channel number
 --arg9	channel name without number (this is _sometimes_ in lowercase)
 	end
-	if (event=="CHAT_MSG_CHANNEL_NOTICE" and strlower(arg9)=="wownet") then
+	if (event=="CHAT_MSG_CHANNEL_NOTICE" and arg9:lower()=="wownet") then
 		return;
 --arg1	"YOU_JOINED", "YOU_LEFT", or "THROTTLED"
 --arg9	channel name without number (this is _sometimes_ in lowercase)
@@ -1271,7 +1372,7 @@ end
 
 
 --[[ DuckNet Protocol 1 ]]
-function DM.Net:ParseInput(prefix,text,instance)
+function DM.Net:ParseInput(prefix,text,sender)
 	local function Closest()
 		local small=string.find(text,DUCKNET_DATA); if (not small) then small=10000; end
 		local Colon=string.find(text,DUCKNET_COMMAND); if (not Colon) then Colon=10000; end
@@ -1325,14 +1426,8 @@ function DM.Net:ParseInput(prefix,text,instance)
 	if (self.DB[prefix].CallBack.InStamp) then self.DB[prefix].CallBack.InStamp(now); end
 
 	-- Base evaluation
---	if (self.DB[prefix].Receiver) then
---		self.DB[prefix].LastOutput=nil;			-- You're on /w. No echo ever comes.
---	end
---DM:Chat("...here 1...");
 	if (text==self.DB[prefix].LastOutput) then self.DB[prefix].LastOutput=nil; return; end	-- Own transmission received
---DM:Chat("...here 2...");
 	if (not text) then return; end
---DM:Chat("...here 3...");
 	text=self:SwapText(text,DUCKNET_TOCODE,DUCKNET_FROMCODE);
 
 	-- Check for broken lines, for concatenation
@@ -1425,15 +1520,17 @@ function DM.Net:ParseInput(prefix,text,instance)
 
 		--[[ Inbound transmission is finished ]]
 		elseif (tag==DUCKNET_COMMAND.."A" and entry==DUCKNET_ACT_TRANSMITDONE) then
-			if (self.DB[prefix].Receiver) then		-- Decode and unpack data for WoWnet
-				for nDataEntry,_ in pairs(self.DB[prefix].Data) do
-					-- Repack all in a table, as outer table has not been coded
-					self.DB[prefix].Data[nDataEntry]=DM.Table:GetType({},100)..DM.Code:Decode(self.DB[prefix].Data[nDataEntry])..DM.Table.eTable..string.char(100);	-- Decode
-					self.DB[prefix].Data[nDataEntry]=DM.Table:DecompressV1({},self.DB[prefix].Data[nDataEntry],true);	-- Unpack
+			if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Incoming data done"); end
+			if (not DM.WoWnet.Session:InDataIntercept(prefix,self.DB[prefix].Receiver,sender,self.DB[prefix].Data)) then	-- If not wownet
+				local m1,m2=(DM.Database:SplitMarker(self.DB[prefix].Negotiate.StartMarker));
+				if (m1=="DatabaseF" and DM.Database.Database[m2]) then
+					DM.Database:MergeDatabase(m2,self.DB[prefix].Data);
+				elseif (m1:find("Database",1,true)==1) then
+					DM.Database:InData(self.DB[prefix].Data,sender);
+				else
+					self.DB[prefix].CallBack.RX(self.DB[prefix].Data,sender);		-- Give table-pointer to registered addon
 				end
 			end
-			if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Incoming data done"); end
-			self.DB[prefix].CallBack.RX(self.DB[prefix].Data);					-- Give table-pointer to registered addon
 			self.DB[prefix].LastEntry=-1;										-- Nothing received yet
 			if (DuckMod_Present) then DuckMod_DN_ACT_TRANSMITDONE(instance); end
 
@@ -2051,15 +2148,16 @@ end
 -- The rest of the code do however support multiple simultaneous pages.
 -- Check the return value for success. "nil" is fail. "true" is victory.
 -- If "nil", retry next update-frame.
-function DM:Render(frame,data)
+function DM:Render(frame,sectiondata)
 	if (DM.RU.Canvas) then return nil; end	-- Could not render at this time
 	DM.RU.Canvas=frame;
+	DM.RU.Canvas.SECTIONDATA=sectiondata;
 	if (not frame.WnRenderData) then
 		frame.WnRenderData={};
 		frame.WnRenderData.Widget={};
 	end
 	DM.RenderWnCounter=0;
-	DM.RenderWnRemaining=data;
+	DM.RenderWnRemaining=sectiondata.Data;
 	if (DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining)) then return true; end
 	-- Fail, so do fail-stuff
 	DM.RU.Canvas=nil;
@@ -2329,18 +2427,31 @@ function DM.RU.PageButtonClicked(button)
 					local GetMyData=canvas.WnRenderData.Meta["<elements>"][button.WnElement].IF.GetData;
 					for wwEntry,wwTable in pairs(wTable) do		-- All widgets within group
 						if (canvas.WnRenderData.Meta["<elements>"][wwTable.widget.WnElement].IF.GetData) then
-							if (wwTable.Used and wwTable.widget.WnParam.id) then
+							if (wwTable.Used and wwTable.widget.WnParam.id and wwTable.widget.WnContext[button.WnParam.send]==val) then
 								transData[wwTable.widget.WnParam.id]=wwTable.widget[GetMyData](wwTable.widget);
 								stored=true;
 							end
 						end
 					end
 				end
-					-- We've got data, so send it
+				-- We've got data, so send it
 				if (stored) then
 if (transData.feedText) then	-- The id for the editcontrol
 	DM:Chat("Data: "..transData.feedText);
 end
+--					DM.Net:ConnectW(prefix,cbRX,receiver);
+					local canvas=button:GetParent();
+					if (not canvas.SECTIONDATA) then return; end			-- No meta-data
+					if (not canvas.SECTIONDATA.Server) then return; end		-- No server to send to
+					-- Make a queue for polling and sending depending on result
+					DM.WoWnet.Session:SendPublic("ping:"..canvas.SECTIONDATA.Server);	-- Do ping
+					if (not DM.WoWnet.Session.ResolveWait) then				-- Nothing else waiting
+						DM.WoWnet.Session.ResolveWait={
+							Table=transData,					-- Actual data to send
+							Server=canvas.SECTIONDATA.Server,	-- Server to send to
+							PipeToon=nil;						-- Who's the toon
+						};
+					end
 				end
 			end
 		else
@@ -2727,11 +2838,191 @@ function DM.RU:PullParameter(data)
 end
 
 
+DM.DatabaseTableMeta={};
+
+-- Usage: 
+-- value = MyTable[key]				-- Normal read
+--     value, time = MyTable(key)	-- Read as database-type data
+-- MyTable[key] = value				-- Normal write
+--     MyTable(key, value)			-- Write as database-type data
+-- MyTable[key] = { }				-- Insert an empty table
+--     MyTable(key, { })			-- Insert an empty table with database capabilities
+-- MyTable[key] = { sub=2 }			-- Insert a table
+--     MyTable(key, { sub=2 } )		-- Insert a table as a database entity
+function DM.DatabaseTableMeta.__call(tab,key,value,stamp)
+	if (value) then
+		if (type(value)=="table") then						-- It's a table
+			value._DATABASEKEEPERID=tab._DATABASEKEEPERID;	-- Insert the id
+			value._DATABASEKEEPERMARKER=tab._DATABASEKEEPERMARKER..DM.Net.Split1..key;
+			if (not next(value)) then						-- It's empty
+				setmetatable(value,DM.DatabaseTableMeta);	-- So hook it
+				rawset(tab,key,value);						-- and set it
+				return;
+			end
+		end
+		if (not stamp) then stamp=DM:Time(); end
+		local _,oStamp=DM.Database:DecodeData(rawget(tab,key));
+		if (oStamp<stamp) then
+			rawset(tab,key,DM.Database:CodeData(value,stamp));	-- Also adds complete tables
+			DM.Database.SQ[(#DM.Database.SQ)+1]={
+				tab=tab,
+				key=key,
+			};
+		end
+		return;
+	end
+	return DM.Database:DecodeData(rawget(tab,key));
+end
+
+
+DM.Database={
+	SQ={};
+};
+
+function DM.Database:Register(id,prefix,database)
+	setmetatable(database,DM.DatabaseTableMeta);
+	database._DATABASEKEEPERID=id;
+	database._DATABASEKEEPERMARKER=id;
+	self.Database[id]={		-- DM.Database.Database[id]
+		Prefix=prefix,		-- Communication to use
+		Data=database,		-- Handle to the database
+	}
+	self:Sync(id);
+end
+
+function DM.Database:GetHash(id)
+	local base=self.Database[id].Data;
+	local hash=0;
+	return self:GetHash_2(base,hash);
+end
+
+function DM.Database:GetHash_2(base,hash)
+	for entry,eData in pairs(base) do
+		if (type(eData)=="table") then
+			if (eData._DATABASEKEEPERINFO) then hash=hash+eData._DATABASEKEEPERINFO;
+			else hash=self:GetHash_2(eData,hash); end
+		else
+			local separator=eData:find(":",1,true);
+			hash=hash+tonumber(eData:sub(2,separator-1));
+		end
+	end
+	return hash;
+end
+
+function DM.Database:Sync(id)
+	-- post id and hash to prefix
+	DM.Net:Poll(self.Database[id].prefix,0,self:CombineMarker("DatabaseF",id,self:GetHash(id)));
+	-- The un-equal hashes will now negotiate an update cycle
+end
+
+-- This function will be called if a sync is needed and I am the one to do the update
+function DM.Database:PerformSync(id)
+	DM.Net:SendTable(	self.Database[self.Stack.id].Prefix,
+						self.Database[id].Data,
+						self:CombineMarker("DatabaseF",id)	);
+end
+
+function DM.Database:MergeDatabase(id,data)
+	if (not self.Database[id]) then return nil; end
+	self:MergeDatabase_2(id,self.Database[id].Data,data)
+end
+
+function DM.Database:MergeDatabase_2(id,tOld,tNew)
+	for e,d in pairs(tNew) do
+		if (type(tNew[e])=="table") then
+			if (type(tOld[e])~="table") then tOld[e]=DM:CopyTable(tNew[e]);		-- Shortcut
+			else self:MergeDatabase_2(id,tOld[e],tNew[e]); end
+		else
+			self:Set(id,e,tOld,self:DecodeData(tNew[e]));	-- BEWARE: "DecodeData" returns two values
+		end
+	end
+end
+
+function DM.Database:SendTable(tab,key)
+-- DM.Net:SendTable(prefix,ADD_Data,ADD_BlockName,ADD_Stamp)
+	return DM.Net:SendTable(	self.Database[tab._DATABASEKEEPERID].Prefix,
+								{ [self:CombineMarker("DatabaseT",tab[key]._DATABASEKEEPERMARKER)]=tab[key] },
+								"Database",
+								tab[key]._DATABASEKEEPERINFO	);
+end
+
+function DM.Database:SendSingle(tab,key)
+-- DM.Net:SendSimple(prefix,name,thedata)
+	return DM.Net:SendSimple(	self.Database[tab._DATABASEKEEPERID].Prefix,
+								self:CombineMarker("DatabaseE",tab._DATABASEKEEPERMARKER,key),
+								tab[key]	);
+end
+
+function DM.Database:InData(data)
+	if (type(data)~="table") then return; end
+	
+end
+
+function DM.Database:CombineMarker(m1,m2,m3,m4)
+	if (not m1) then return ""; end
+	return strjoin(DM.Net.Split1,m1,m2,m3,m4);
+end
+
+function DM.Database:SplitMarker(marker)
+	if (not marker) then return nil; end
+	return strplit(DM.Net.Split1,marker);
+end
+
+function DM.Database:Set(id,entry,base,data,stamp)
+	if (not self.Database[id]) then return nil; end
+	if (not base) then base=self.Database[id].Data; end
+	if (not stamp) then stamp=DM:Time(); end
+	if (base[entry]) then
+		local d,s=self:DecodeData(base[entry]);
+		if (not s) then s=0; end							-- Overwrite old (and incompatible) data
+		if (stamp<=s) then return true; end					-- Current data is newer
+		if (type(d)=="table") then wipe(base[entry]); end	-- It's a table, so wipe it first
+		base[entry]=nil;									-- Detach reference
+	end
+	base[entry]=self.CodeData(data,stamp);
+	return true;
+end
+
+function DM.Database:Get(id,entry,base)
+	if (not self.Database[id]) then return nil; end
+	if (not base) then base=self.Database[id].Data; end
+	return self:DecodeData(base[entry]);
+end
+
+function DM.Database:CodeData(data,stamp)
+	if (not stamp) then stamp=DM:Time(); end
+	local pre;
+	if (type(data)=="string") then pre="s";
+	elseif (type(data)=="number") then pre="n"; data=tostring(data);
+	elseif (type(data)=="boolean") then pre="b"; data=tostring(data);
+	elseif (type(data)=="nil") then pre="x"; data="nil";
+	elseif (type(data)=="table") then data._DATABASEKEEPERINFO=stamp; return data;
+	else return nil; end
+	return pre..stamp..":"..data;
+end
+
+function DM.Database:DecodeData(data)
+	if (type(data)=="string") then
+		local separator=data:find(":",1,true);
+		if (not separator) then return data; end
+		local stamp=tonumber(data:sub(2,separator-1));
+		if (data:sub(1,1)=="s") then return data:sub(separator+1),stamp;
+		elseif (data:sub(1,1)=="n") then return tonumber(data:sub(separator+1)),stamp;
+		elseif (data:sub(1,1)=="b") then if (data:sub(separator+1)=="true") then return true,stamp else return false,stamp; end
+		elseif (data:sub(1,1)=="x") then return nil,stamp;
+		end
+	elseif (type(data)=="table") then
+		return data,data._DATABASEKEEPERINFO;
+	end
+	return data;
+end
+
+
 function DM:Init()
+	DM:TimeDiff();
 	DM.Net:Init();
 end
 
---LeaveChannelByName("WoWnet");
 
 
 end		-- if (not DuckMod[TV]) then
