@@ -18,7 +18,10 @@
 
 TestDebugTable={}
 
-local TV=2.0701;
+local TV=2.0703;
+-- 2.0703
+-- + Rendering speed-up
+-- 2.0702
 -- 2.0701
 -- + Various minor changes, and version change for conflict detection
 -- 2.07
@@ -2150,6 +2153,17 @@ end
 -- If "nil", retry next update-frame.
 function DM:Render(frame,sectiondata)
 	if (DM.RU.Canvas) then return nil; end	-- Could not render at this time
+	if (type(sectiondata)=="table") then			-- SECTIONDATA
+	elseif (type(sectiondata)=="string") then		-- SECTIONDATA.Data
+		sectiondata={
+			Data=sectiondata,
+			Keys="",
+			Description="Anonymous data",
+			Server="",
+			Location="",
+		};
+	else return; end
+
 	DM.RU.Canvas=frame;
 	DM.RU.Canvas.SECTIONDATA=sectiondata;
 	if (not frame.WnRenderData) then
@@ -2239,11 +2253,12 @@ DM:Chat("Rendering body...",1,0,1);
 							DM.RU:SetFont(canvas,widget,mix);
 							widget:SetShadowOffset(0,0);
 						end
-DM:Chat(entryname);
+--DM:Chat(entryname);
 if (not canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData) then
 	DM:Chat("no setdata");
 end
 						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,data);	-- Simulate colon
+--widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,"my text data");
 					else
 						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,r,g,b,a);	-- Simulate colon
 					end
@@ -2260,7 +2275,8 @@ end
 		end
 	end
 	DM.RenderWnCounter=DM.RenderWnCounter+1;
-	if (DM.RenderWnCounter==3) then DM.RU.Canvas=nil; end		-- Done with this canvas
+--DM:Chat(DM.RenderWnCounter);
+	if (DM.RenderWnCounter==4) then DM.RU.Canvas=nil; end		-- Done with this canvas
 	return true;
 end
 
@@ -2271,15 +2287,16 @@ DM.RU={
 		-- "=" denotes the named class
 		-- "x" denotes included entities
 		HaveContainer = 0x00000001, -- x x
-		UIObject      = 0x00000002, -- x x x x x
-		FontInstance  = 0x00000004, -- x   x
-		Region        = 0x00000008, -- x x x x x
+		UIObject      = 0x00000002, -- x x x x x x
+		FontInstance  = 0x00000004, -- x   x     x
+		Region        = 0x00000008, -- x x x x x x
 		LayeredRegion = 0x00000010, -- x x
 		FontString    = 0x00000020, -- =
 		Texture       = 0x00000040, --   =
-		Frame         = 0x00000080, --     x x =
+		Frame         = 0x00000080, --     x x = x
 		EditBox       = 0x00000100, --     =
 		Button        = 0x00000200, --       =
+		SimpleHTML    = 0x00000400, --           =
 
 		WNCheckBox    = 0x40000000,
 		WNListBox     = 0x80000000,
@@ -2289,6 +2306,7 @@ DM.RU={
 		Frame_        = 0x0000008A, -- Full Frame
 		EditBox_      = 0x0000018E, -- Full EditBox
 		Button_       = 0x0000028A, -- Full Button
+		TextLink_     = 0x0000048E, -- DuckMod special frame
 	},
 };
 
@@ -2323,10 +2341,13 @@ DM.RU.DefaultMeta={
 			Class=0,
 		},
 		["<text>"]={
-			widget="FontString",				-- the widget
 			font="Default",
 			pad=3,
+			widget="FontString",				-- the widget
 			Class=DM.RU.Class.FontString_,
+--			widget="SimpleHTML",				-- the widget
+--			inheritSys="DuckWidget_FontStringLink",
+--			Class=DM.RU.Class.TextLink_,
 		},
 		["<h1>"]={
 			widget="FontString",				-- the widget
@@ -2396,7 +2417,7 @@ function DM.RU:InitPage(canvas)
 			DM.RU:InitWidget(wwTable.widget);
 		end
 	end
-DM:Chat("Setting default interfaces...",1,0,1);
+--DM:Chat("Setting default interfaces...",1,0,1);
 	-- Set interface for all defaults
 	for nElement,dElement in pairs(canvas.WnRenderData.Meta["<elements>"]) do
 		self:SetInterface(canvas,nElement,dElement.Class)
@@ -2487,6 +2508,7 @@ end
 
 -- Handle "glue" and "flow"
 function DM.RU:SetPosition(canvas,widget,param)
+--DM.MeasureFontString
 	if (not param) then param={}; end
 	local glue,flow,align,pad=param.glue,param.flow,param.align,param.pad;		-- Make copies
 	local bottomtype="stack";
@@ -2500,7 +2522,7 @@ function DM.RU:SetPosition(canvas,widget,param)
 			value=tonumber(value:sub(1,-2));			-- Get the percentage
 			value=(canvas:GetWidth()/100)*value;	-- Convert to points
 		end
-DM:Chat("Width: "..tonumber(value));
+--DM:Chat("Width: "..tonumber(value));
 		widget:SetWidth(tonumber(value));				-- Set provided value directly
 		wSet=true;
 	end
@@ -2519,7 +2541,7 @@ DM:Chat("Width: "..tonumber(value));
 	glue=glue:upper();
 	flow=flow:upper();
 
-DM:Chat("g:"..glue.." f:"..flow.." a:"..align);
+--DM:Chat("g:"..glue.." f:"..flow.." a:"..align);
 
 	-- Set text adjustment. "align" has presedence as it does that for positioning as well.
 	local adjust;
@@ -2567,7 +2589,7 @@ DM:Chat("g:"..glue.." f:"..flow.." a:"..align);
 
 	-- Expand widget if text is bigger than said area
 	if (not wSet and widget.GetStringWidth) then
-DM:Chat("here...");
+--DM:Chat("here...");
 		local _,step,_=widget:GetFont();
 		local cWidth=canvas:GetWidth();
 		local sWidth=widget:GetStringWidth();
@@ -2680,9 +2702,9 @@ function DM.RU:SetFont(canvas,widget,param)
 	-- Start with default
 	face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font.Default)
 
-if (param.font) then
-	DM:Chat(param.font);
-end
+--if (param.font) then
+--	DM:Chat(param.font);
+--end
 	if (param.font and canvas.WnRenderData.Meta.font[param.font]) then			-- Font supplied and it exists
 		face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font[param.font]);
 	end
@@ -2705,7 +2727,7 @@ function DM.RU:MakeFont(widget,face,height,flags,font)
 		local r,g,b,a=self:SplitColor(font.color);
 		if (r) then widget:SetTextColor(r,g,b,a); end
 	end
-DM:Chat(height);
+--DM:Chat(height);
 	return face,height,flags;
 end
 
@@ -2760,6 +2782,23 @@ function DM.RU:Flag(canvas,widget,flag)
 end
 
 
+function DM.RU:PullParameters(text)
+--DM:Chat("P:"..text);
+	local param={};
+	local start=0;
+	text=strtrim(text);
+	repeat
+		start=start+1;
+		local pE=text:find("=\"",start,true)-1;
+		local dE=text:find("\"",pE+3,true)-1;
+		param[text:sub(start,pE):lower()]=text:sub(pE+3,dE);
+--DM:Chat("P->:"..text:sub(start,pE):lower().."="..text:sub(pE+3,dE));
+		start=dE+2;									-- Position at space between parameters
+	until (text:sub(start,start)~=" ");
+	return param;
+end
+
+
 
 -- * The section must start at the first character
 -- * Does NOT support nested same-type top-tags
@@ -2769,10 +2808,41 @@ end
 --           Data: The entire contents between starting and ending tags
 --      Remaining: The remainder of the data-block
 function DM.RU:PullSection(data)
+--DM:Chat("PullSection...",1,0,1);
+	local locS=data:find(" ",1,true);
+	local locE=data:find(">",1,true);
+
+	-- locTagStart is by definition always 1
+	-- locTagNameStart is by definition always 2
+	local locTagNameEnd,locTagEnd
+	local params=nil;
+
+	if (locS and locS<locE) then	-- With parameters
+		locTagNameEnd=locS-1;
+		locTagEnd=locE;
+		if (data:find("/>",locTagEnd-1,true)==locTagEnd-1) then		-- No data included
+			params=self:PullParameters(data:sub(locS+1,locTagEnd-2));
+			-- Return the distilled data (tag,params,data,remaining)
+--DM:Chat("R:"..strtrim(data:sub(locTagEnd+1,locTagEnd+1+25)));
+			return data:sub(1,locTagNameEnd)..">",params,nil,strtrim(data:sub(locTagEnd+1));
+		end
+		params=self:PullParameters(data:sub(locS+1,locTagEnd-1));
+	else 							-- Without parameters
+		locTagNameEnd=locE-1;
+		locTagEnd=locE;
+	end
+	local locEndTagStart,locEndTagEnd=data:find("</"..data:sub(2,locTagNameEnd)..">",locE,true);
+--DM:Chat("D:"..strtrim(data:sub(locTagEnd+1,locEndTagStart-1)));
+--DM:Chat("R:"..strtrim(data:sub(locEndTagEnd+1,locEndTagEnd+1+25)));
+	return data:sub(1,locTagNameEnd)..">",params,strtrim(data:sub(locTagEnd+1,locEndTagStart-1)),strtrim(data:sub(locEndTagEnd+1));
+end
+--[[
+function DM.RU:PullSection(data)
 DM:Chat("PullSection...",1,0,1);
 	if (not data:find("<",1,true)==1) then return; end	-- No start-tag present
 	if (not data:find(">",1,true)) then return; end		-- No tag present
 DM:Chat("- got tag(s)",1,0,1);
+DM:Chat(data,1,0.8,1);
 	local param=nil;									-- nil it in case there are none
 	local remaining;
 	local locA=data:find(">",1,true);
@@ -2783,6 +2853,7 @@ DM:Chat("- got tag(s)",1,0,1);
 		data="";										-- Set no data
 	else
 DM:Chat("- got tag "..entryName.." with data",1,0,1);
+DM:Chat(data,1,0.8,1);
 		local extryName;
 		if (entryName:find(" ",1,true)) then			-- tag has spaces (thus also parameters)
 			locA=entryName:find(" ",1,true);			-- Find first space
@@ -2794,8 +2865,9 @@ DM:Chat("- created "..extryName.." as ending tag",1,0,1);
 		locA=data:find(extryName,1,true);				-- Find the ending tag
 		if (not locA) then return; end					-- ERROR: No closing tag
 DM:Chat("- found "..extryName.." in data",1,0,1);
-		remaining=data:sub(locA+extryName:len()+1);		-- Copy from termination and out
+		remaining=data:sub(locA+extryName:len());		-- Copy from termination and out
 		data=data:sub(1,locA-1);						-- Keep only enclosed data
+DM:Chat(remaining,1,0.8,1);
 	end
 	-- Clean up entryName (may still have parameters)
 	entryName=entryName:sub(2,entryName:len()-1);		-- Cut "<" and ">"
@@ -2822,6 +2894,7 @@ DM:Chat("- found "..extryName.." in data",1,0,1);
 DM:Chat("<- Done: "..entryName,1,0,1);
 	return entryName,param,data,remaining;		-- Return the distilled data
 end
+]]
 
 --face="/Files/Fonts/Somewhere/uglyfont.ttf" size="12" color="#AARRGGBB"
 function DM.RU:PullParameter(data)
@@ -3021,6 +3094,14 @@ end
 function DM:Init()
 	DM:TimeDiff();
 	DM.Net:Init();
+
+--	if (not DM.MeasureFontString) then
+--		DM.MeasureFontString=CreateFrame("FontString","DuckMod-Net-Messager"..TV,UIParent);
+--		if (not DM.MeasureFontString) then
+--			DM:Chat("Could not create a DuckMod measurement frame",1);
+--			return;
+--		end
+--	end
 end
 
 
