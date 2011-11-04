@@ -273,9 +273,13 @@ function DuckWidget.ListBox.SliderChanged(frame)
 end
 
 function DuckWidget.ListBox.SendEvent(button,event)
-	local parent=button:GetParent();
+	local parent=button:GetParent():GetParent();
 	local handler=parent:GetScript("OnEvent");
-	if (not handler) then return; end
+	if (not handler) then
+		parent=button:GetParent();
+		handler=parent:GetScript("OnEvent");
+		if (not handler) then DEFAULT_CHAT_FRAME:AddMessage("No handler"); return; end
+	end
 	handler(parent,event,button:GetParent(),button.ListIndex);
 end
 

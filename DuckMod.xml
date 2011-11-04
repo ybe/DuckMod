@@ -1,25 +1,6 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 	<Script file="DuckMod.lua"/>
 
-	<Frame name="DuckWidget_FontStringLink_old" virtual="true">
-		<Layer level="ARTWORK">
-			<FontString name="$parent_Text">
-				<Anchors><Anchor point="TOPLEFT"/></Anchors>
-			</FontString>
-		</Layer>
-		<Frames>
-			<SimpleHTML name="$parent_Display">
-				<Anchors><Anchor point="TOPLEFT"/><Anchor point="BOTTOMRIGHT"/></Anchors>
-			</SimpleHTML>
-		</Frames>
-		<Scripts>
-			<OnLoad>
-				setmetatable(self,{__index=_G[self:GetName().."_Text"]});
-				self.SetRealText=_G[self:GetName().."_Display"].SetText
-			</OnLoad>
-		</Scripts>
-	</Frame>
-
 	<SimpleHTML name="DuckWidget_FontStringLink" virtual="true">
 		<Layer level="ARTWORK">
 			<FontString name="$parent_Text">
@@ -28,8 +9,7 @@
 		</Layer>
 		<Scripts>
 			<OnLoad>
-				--setmetatable(self,{__index=_G[self:GetName().."_Text"]});
-				--self.SetRealText=_G[self:GetName().."_Display"].SetText
+				DuckModXML_LoadFunctions(self);
 			</OnLoad>
 		</Scripts>
 	</SimpleHTML>

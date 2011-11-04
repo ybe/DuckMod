@@ -86,9 +86,7 @@ DUCKNET_ACT_TRANSMITDONE = "DuckNet-Act-Transmit-Data-Done";
 DUCKNET_ACT_MYSTAMP = "DuckNet-Act-MyStamp";
 
 
-if (not DuckMod) then						-- Make it if empty
-	DuckMod = {};
-end
+if (not DuckMod) then DuckMod = {}; end			-- Make it if empty
 
 
 if (not DuckMod[TV]) then					-- Don't mess with it if it's loaded
@@ -916,6 +914,7 @@ function DM.WoWnet.Session:InDataIntercept(prefix,user,sender,data)
 		if (not CrawlerIncoming[entry][user]) then CrawlerIncoming[entry][user]={}; end
 		-- Merge new incoming data
 		CrawlerIncoming[entry][user]=DuckLib:CopyTable(eTable,CrawlerIncoming[entry][user]);
+DM:Chat("Form received: "..entry.."/"..user);
 	end
 
 	data.CallBack.RX(data,sender);	-- Give table-pointer to registered WoWnet addon
@@ -1528,7 +1527,7 @@ function DM.Net:ParseInput(prefix,text,sender)
 				local m1,m2=(DM.Database:SplitMarker(self.DB[prefix].Negotiate.StartMarker));
 				if (m1=="DatabaseF" and DM.Database.Database[m2]) then
 					DM.Database:MergeDatabase(m2,self.DB[prefix].Data);
-				elseif (m1:find("Database",1,true)==1) then
+				elseif (m1 and m1:find("Database",1,true)==1) then
 					DM.Database:InData(self.DB[prefix].Data,sender);
 				else
 					self.DB[prefix].CallBack.RX(self.DB[prefix].Data,sender);		-- Give table-pointer to registered addon
@@ -2170,6 +2169,7 @@ function DM:Render(frame,sectiondata)
 		frame.WnRenderData={};
 		frame.WnRenderData.Widget={};
 	end
+
 	DM.RenderWnCounter=0;
 	DM.RenderWnRemaining=sectiondata.Data;
 	if (DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining)) then return true; end
@@ -2214,11 +2214,20 @@ DM:Chat("Setting up meta...",1,0,1);
 				end
 			end
 		elseif (entryname=="<body>") then
+DM:Chat("Setting linker placeholder...",1,0,1);
+			if (not canvas.MeasureFontString) then
+				canvas.MeasureFontString=DM.RU:GetWidget(canvas,"<ptext>",canvas.WnRenderData.Meta["<elements>"]["<ptext>"],nil);
+				if (not canvas.MeasureFontString) then
+					DM:Chat("Could not create a DuckMod measurement frame",1);
+					return;
+				end
+				canvas.MeasureFontString.SPECIALNOREUSE=true;
+			end
 DM:Chat("Rendering body...",1,0,1);
 			-- Set the page standards from meta
 			if (canvas.WnRenderData.Meta["<page>"]) then
 				if (canvas.WnRenderData.Meta["<page>"].background) then
-					local bgwidget=DM.RU:GetWidget(canvas,"<none>",canvas.WnRenderData.Meta["<elements>"]["<img>"],nil);
+					local bgwidget=DM.RU:GetWidget(canvas,"<img>",canvas.WnRenderData.Meta["<elements>"]["<img>"],nil);
 					bgwidget:SetDrawLayer("BACKGROUND");
 					bgwidget:ClearAllPoints();
 					bgwidget:SetPoint("TOPLEFT",canvas,"TOPLEFT");
@@ -2251,19 +2260,28 @@ DM:Chat("Rendering body...",1,0,1);
 					if (not r) then
 						if (DM.RU:Flag(canvas,canvas.WnRenderData.Meta["<elements>"][entryname],"FontInstance")) then
 							DM.RU:SetFont(canvas,widget,mix);
-							widget:SetShadowOffset(0,0);
 						end
---DM:Chat(entryname);
-if (not canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData) then
-	DM:Chat("no setdata");
-end
 						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,data);	-- Simulate colon
---widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,"my text data");
 					else
 						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,r,g,b,a);	-- Simulate colon
 					end
-					-- * Anchor and size it
-					DM.RU:SetPosition(canvas,widget,mix);
+					-- * Set it for placeholder if needed
+					local swap=DM.RU:Flag(canvas,canvas.WnRenderData.Meta["<elements>"][entryname],"SwapToLink");
+					if (swap) then
+						DM.RU:InitWidget(canvas.MeasureFontString);
+						DM.RU:CopyTextAttributes(widget,canvas.MeasureFontString);
+						canvas.MeasureFontString:SetText(data);
+					end
+					-- * Anchor and size
+					DM.RU:SetPosition(canvas,widget,mix,DM.RU:Flag(canvas,canvas.WnRenderData.Meta["<elements>"][entryname],"SwapToLink"));
+					-- * Set it for the actual widget if needed
+					if (swap) then
+						widget[canvas.WnRenderData.Meta["<elements>"][entryname].IF.SetData](widget,data);	-- Simulate colon
+					end
+--					if (widget.SetBackdrop) then
+--						local backdrop={bgFile = "Interface\\DialogFrame\\UI-DialogBox-Gold-Background",edgeFile=nil,tile=false,tileSize=1,edgeSize=0,insets={left=0,right=0,top=0,bottom=0}}
+--						widget:SetBackdrop(backdrop);
+--					end
 					-- * Show it
 					widget:Show();
 					canvas.WnRenderData.LastWidget=widget;
@@ -2275,8 +2293,15 @@ end
 		end
 	end
 	DM.RenderWnCounter=DM.RenderWnCounter+1;
---DM:Chat(DM.RenderWnCounter);
-	if (DM.RenderWnCounter==4) then DM.RU.Canvas=nil; end		-- Done with this canvas
+
+	-- Finalise the page
+	if (DM.RenderWnCounter==4) then
+		DM.RU.Canvas=nil;						-- Done with this canvas
+	end
+--	if (DM.RenderWnCounter==2) then
+--		DM.RenderWnCounter=4;
+--		DM.RU.Canvas=nil;						-- Done with this canvas
+--	end
 	return true;
 end
 
@@ -2287,16 +2312,19 @@ DM.RU={
 		-- "=" denotes the named class
 		-- "x" denotes included entities
 		HaveContainer = 0x00000001, -- x x
-		UIObject      = 0x00000002, -- x x x x x x
-		FontInstance  = 0x00000004, -- x   x     x
-		Region        = 0x00000008, -- x x x x x x
+		UIObject      = 0x00000002, -- x x x x x x x
+		FontInstance  = 0x00000004, -- x   x     x x
+		Region        = 0x00000008, -- x x x x x x x
 		LayeredRegion = 0x00000010, -- x x
 		FontString    = 0x00000020, -- =
 		Texture       = 0x00000040, --   =
-		Frame         = 0x00000080, --     x x = x
+		Frame         = 0x00000080, --     x x = x x
 		EditBox       = 0x00000100, --     =
 		Button        = 0x00000200, --       =
 		SimpleHTML    = 0x00000400, --           =
+		ScrMsgFrame   = 0x00000800, --             =
+		SwapToLink    = 0x00001000, --
+		DeadEditBox   = 0x00002000,
 
 		WNCheckBox    = 0x40000000,
 		WNListBox     = 0x80000000,
@@ -2306,7 +2334,10 @@ DM.RU={
 		Frame_        = 0x0000008A, -- Full Frame
 		EditBox_      = 0x0000018E, -- Full EditBox
 		Button_       = 0x0000028A, -- Full Button
-		TextLink_     = 0x0000048E, -- DuckMod special frame
+		TextLink_     = 0x0000083F, -- FontString + SwapToLink
+		SimpleHTML_   = 0x0000148E, -- Full SimpleHTML + swap-flag
+		ScrMsgFrame_  = 0x0000088E, -- Full ScrollingMessageFrame
+		DeadEditBox_  = 0x0000318E, -- Full editBox with no interaction
 	},
 };
 
@@ -2340,14 +2371,35 @@ DM.RU.DefaultMeta={
 		["<none>"]={							-- dummy
 			Class=0,
 		},
-		["<text>"]={
+		["<ptext>"]={
 			font="Default",
 			pad=3,
 			widget="FontString",				-- the widget
 			Class=DM.RU.Class.FontString_,
---			widget="SimpleHTML",				-- the widget
---			inheritSys="DuckWidget_FontStringLink",
+		},
+		["<text>"]={
+			font="Default",
+			pad=3,
+--			widget="FontString",				-- the widget
 --			Class=DM.RU.Class.TextLink_,
+			widget="EditBox",					-- the widget
+			Class=DM.RU.Class.DeadEditBox_,
+
+--			widget="SimpleHTML",				-- the widget
+--			Class=DM.RU.Class.SimpleHTML_,
+--			widget="ScrollingMessageFrame",		-- the widget
+--			Class=DM.RU.Class.ScrMsgFrame_,
+		},
+		["<Ltext>"]={
+			font="Default",
+			pad=3,
+--			widget="FontString",				-- the widget
+--			Class=DM.RU.Class.TextLink_,
+			widget="SimpleHTML",				-- the widget
+			Class=DM.RU.Class.SimpleHTML_,
+--			widget="ScrollingMessageFrame",		-- the widget
+--			Class=DM.RU.Class.ScrMsgFrame_,
+
 		},
 		["<h1>"]={
 			widget="FontString",				-- the widget
@@ -2426,9 +2478,39 @@ end
 
 function DM.RU:InitWidget(widget)
 	widget:Hide();					-- Hide all
+--	if (widget.SetText) then widget:SetText(""); end
 	widget:ClearAllPoints();
 	widget:SetHeight(0);
 	widget:SetWidth(0);
+end
+
+DM.RU.ScrMsgFrame={};
+function DM.RU.ScrMsgFrame.SetText(self,text,r,g,b)
+	self:Clear();
+	self:AddMessage(text,r,g,b);
+end
+
+DM.RU.SimpleHTML={};
+function DM.RU.SimpleHTML._SetText(self,text)
+	self.DMRUTextContents=text;
+	self:SetText(text);
+end
+function DM.RU.SimpleHTML._GetText(self)
+	return self.DMRUTextContents;
+end
+
+function DM.RU.Widget_OnHyperlinkClicked(widget,linkdata,link,button)
+	DM:Chat("Clicked: "..linkdata);	-- essential center - "H" part
+	DM:Chat("Clicked: "..link);		-- Complete link text
+	DM:Chat("Clicked: "..button);	-- "LeftButton"
+
+	if (widget.WnContext and widget.WnContext.onlinkclick) then
+		if (_G[widget.WnContext.onlinkclick]) then
+			_G[widget.WnContext.onlinkclick](linkdata,link,button);
+		else
+			DM:Chat("Non-existing click-handler: "..widget.WnContext.onlinkclick);
+		end
+	end
 end
 
 function DM.RU.PageButtonClicked(button)
@@ -2437,10 +2519,16 @@ function DM.RU.PageButtonClicked(button)
 	else
 		local canvas=button.WnCanvas;
 		DM:Chat("Button clicked: "..button:GetName());
-		if (not button.WnParam) then						-- No params in XML
+		if (button.WnContext and button.WnContext.onclick) then
+			if (_G[button.WnContext.onclick]) then
+				_G[button.WnContext.onclick](button,button.WnContext,button.WnParam);
+			else
+				DM:Chat("Non-existing click-handler: "..button.WnContext.onclick);
+			end
+		elseif (not button.WnParam) then						-- No params in XML
 			DM:Chat("No action associated with this button.");
-		elseif (button.WnParam.send) then					-- param "send" supplied
-			if (button.WnContext[button.WnParam.send]) then	-- It's send-data exists in the context
+		elseif (button.WnParam.send) then						-- param "send" supplied
+			if (button.WnContext[button.WnParam.send]) then		-- It's send-data exists in the context
 				local val=button.WnContext[button.WnParam.send];
 				local transData={};
 				local stored=nil;
@@ -2506,21 +2594,35 @@ function DM.RU:Mix(paramA,paramB)
 	return DM:CopyTable(paramA,param);		-- Merge and return
 end
 
+function DM.RU:CopyTextAttributes(wF,wT)
+--	wT:SetFontObject(wF:GetFontObject());
+	wT:SetFont(wF:GetFont());
+	wT:SetSpacing(wF:GetSpacing());
+--	if (wF.GetText) then
+--		wT:SetText(wF:GetText());
+--	end
+end
+
 -- Handle "glue" and "flow"
-function DM.RU:SetPosition(canvas,widget,param)
---DM.MeasureFontString
+function DM.RU:SetPosition(canvas,widget,param,swap)
 	if (not param) then param={}; end
 	local glue,flow,align,pad=param.glue,param.flow,param.align,param.pad;		-- Make copies
 	local bottomtype="stack";
 
-	widget:ClearAllPoints();
+	if (swap) then
+--		DM.RU:CopyTextAttributes(widget,canvas.MeasureFontString)
+		swap=widget;
+		widget=canvas.MeasureFontString;
+	end
 
+	widget:ClearAllPoints();
+	local cWidth=canvas:GetWidth();
 	local hSet,wSet;
 	if (param.width) then
 		local value=tostring(param.width);
 		if (value:sub(-1)=="%") then
 			value=tonumber(value:sub(1,-2));			-- Get the percentage
-			value=(canvas:GetWidth()/100)*value;	-- Convert to points
+			value=(cWidth/100)*value;	-- Convert to points
 		end
 --DM:Chat("Width: "..tonumber(value));
 		widget:SetWidth(tonumber(value));				-- Set provided value directly
@@ -2559,12 +2661,12 @@ function DM.RU:SetPosition(canvas,widget,param)
 	elseif (align=="RIGHT" or (not canvas.WnRenderData.LastWidget and glue=="RIGHT")) then
 		widget:SetPoint("TOPRIGHT",canvas,"TOPRIGHT",0,0-(canvas.WnRenderData.Bottom+bottomadd));
 		lockside="RIGHT";
-		canvas.WnRenderData.LockH=canvas:GetWidth()-0;
+		canvas.WnRenderData.LockH=cWidth-0;
 		adjust="RIGHT";
 	elseif (align=="CENTER" or (not canvas.WnRenderData.LastWidget and glue=="TOP")) then
 		widget:SetPoint("TOP",canvas,"TOP",0,0-(canvas.WnRenderData.Bottom+bottomadd));
 		lockside="CENTER";
-		canvas.WnRenderData.LockH=canvas:GetWidth()/2;
+		canvas.WnRenderData.LockH=cWidth/2;
 		adjust="CENTER";
 	elseif (glue=="LEFT") then
 		if (flow=="DOWN") then widget:SetPoint("TOPLEFT",canvas.WnRenderData.LastWidget,"TOPRIGHT",pad,0); bottomtype="TOPDOWN";
@@ -2590,33 +2692,29 @@ function DM.RU:SetPosition(canvas,widget,param)
 	-- Expand widget if text is bigger than said area
 	if (not wSet and widget.GetStringWidth) then
 --DM:Chat("here...");
-		local _,step,_=widget:GetFont();
-		local cWidth=canvas:GetWidth();
+--		local _,step,_=widget:GetFont();
 		local sWidth=widget:GetStringWidth();
 
 		if (lockside=="LEFT") then
 			canvas.WnRenderData.LockH=canvas.WnRenderData.LockH+pad;
-			if (canvas.WnRenderData.LockH+sWidth>=cWidth) then widget:SetWidth(cWidth-canvas.WnRenderData.LockH);
-			elseif (canvas.WnRenderData.LockH+sWidth+step>=cWidth) then widget:SetWidth(cWidth-canvas.WnRenderData.LockH-step);
-			else
-				--widget:SetWidth(sWidth);
+			if (canvas.WnRenderData.LockH+sWidth>cWidth) then
+				widget:SetWidth(cWidth-canvas.WnRenderData.LockH);
 			end
 		elseif (lockside=="RIGHT") then
 			canvas.WnRenderData.LockH=canvas.WnRenderData.LockH-pad;
-			if (canvas.WnRenderData.LockH-sWidth<=0) then widget:SetWidth(canvas.WnRenderData.LockH);
-			elseif (canvas.WnRenderData.LockH-(sWidth+step)<=0) then widget:SetWidth(canvas.WnRenderData.LockH-step);
-			else
-				--widget:SetWidth(sWidth+step);
+			if (canvas.WnRenderData.LockH-(sWidth)<0) then
+				widget:SetWidth(canvas.WnRenderData.LockH);
 			end
 		elseif (lockside=="CENTER") then
-			if (canvas.WnRenderData.LockH-(sWidth/2)<=0) then widget:SetWidth(cWidth);
-			else widget:SetWidth(sWidth+step); end
+			if (canvas.WnRenderData.LockH-(sWidth/2)<0) then
+				widget:SetWidth(cWidth);
+			end
 		end
 	end
 
 
 	if (not hSet and widget.GetStringHeight) then
-		widget:SetHeight(widget:GetStringHeight()+1);
+		widget:SetHeight(widget:GetStringHeight());
 	end
 
 	-- Set new lock-side
@@ -2641,16 +2739,33 @@ function DM.RU:SetPosition(canvas,widget,param)
 			canvas.WnRenderData.Bottom=canvas.WnRenderData.Bottom+(widget:GetHeight()-canvas.WnRenderData.LastWidget:GetHeight())/2;
 		end
 	end
+
+	if (swap) then
+DM:Chat("s:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
+--		widget:Show();
+		swap:ClearAllPoints();
+		swap:SetParent(widget:GetParent());
+		swap:SetWidth(widget:GetWidth()*1.0065+0.5);
+		swap:SetHeight(widget:GetHeight()+0.5);
+		local index=1;
+		while(index<=widget:GetNumPoints()) do swap:SetPoint(widget:GetPoint(index)); index=index+1; end
+--		widget:Hide();
+		widget=swap;
+	end
+DM:Chat("w:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
 end
 
 -- Find an unused widget or create a new
 function DM.RU:GetWidget(canvas,element,widget,param)
 	if (not param) then param={}; end
 	local typename=widget.widget;
-	if (not canvas.WnRenderData.Widget[typename]) then canvas.WnRenderData.Widget[typename]={}; end
+	if (not canvas.WnRenderData.Widget[element]) then canvas.WnRenderData.Widget[element]={}; end
 	local TheName=nil;
-	for wEntry,wTable in pairs(canvas.WnRenderData.Widget[typename]) do
-		if (not wTable.Used) then
+	for wEntry,wTable in pairs(canvas.WnRenderData.Widget[element]) do
+		if (canvas.WnRenderData.Widget[element][wEntry].widget.SPECIALNOREUSE) then
+			DM:Chat("SPECIALNOREUSE");
+		end
+		if (not wTable.Used and not canvas.WnRenderData.Widget[element][wEntry].widget.SPECIALNOREUSE) then
 			TheName=wEntry;
 		end
 	end
@@ -2658,39 +2773,61 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 	-- Create new if needed
 	if (not TheName) then
 		TheName="WoWnet-widget-"..DM:Random(0,1000000);		-- Fractional million
-		canvas.WnRenderData.Widget[typename][TheName]={};
+		canvas.WnRenderData.Widget[element][TheName]={};
 		if (self:Flag(canvas,widget,"HaveContainer")) then
 			local creator="Create"..typename;
-			canvas.WnRenderData.Widget[typename][TheName].widget=canvas[creator](canvas,TheName);	-- Simulate colon
+			canvas.WnRenderData.Widget[element][TheName].widget=canvas[creator](canvas,TheName);	-- Simulate colon
 		else
-			canvas.WnRenderData.Widget[typename][TheName].widget=CreateFrame(typename,TheName,canvas,widget.inheritSys);
+			canvas.WnRenderData.Widget[element][TheName].widget=CreateFrame(typename,TheName,canvas,widget.inheritSys);
+			if (self:Flag(canvas,widget,"SimpleHTML")) then
+				canvas.WnRenderData.Widget[element][TheName].widget._SetText=DM.RU.SimpleHTML._SetText;
+				canvas.WnRenderData.Widget[element][TheName].widget._GetText=DM.RU.SimpleHTML._GetText;
+			elseif (self:Flag(canvas,widget,"DeadEditBox")) then
+				canvas.WnRenderData.Widget[element][TheName].widget:SetHyperlinksEnabled(true);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetTextInsets(-1,-1,-1,0);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetMultiLine(true);
+				canvas.WnRenderData.Widget[element][TheName].widget:EnableKeyboard(nil);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetAutoFocus(nil);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetScript("OnHyperlinkClick",DM.RU.Widget_OnHyperlinkClicked);
+			elseif (self:Flag(canvas,widget,"ScrMsgFrame")) then
+				canvas.WnRenderData.Widget[element][TheName].widget.SetText=DM.RU.ScrMsgFrame.SetText;
+				canvas.WnRenderData.Widget[element][TheName].widget:SetHyperlinksEnabled(true);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetFading(nil);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetIndentedWordWrap(nil);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetMaxLines(1000);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetResizable(nil);	-- user resizable off
+			end
 		end
 	else
-		canvas.WnRenderData.Widget[typename][TheName].widget:SetParent(canvas);			-- In case it was moved earlier
-		wipe(canvas.WnRenderData.Widget[typename][TheName].widget.WnContext);				-- Clear the context for the element
-		canvas.WnRenderData.Widget[typename][TheName].widget.WnContext=nil;				-- And throw it away
-		if (canvas.WnRenderData.Widget[typename][TheName].widget.WnParam) then
-			wipe(canvas.WnRenderData.Widget[typename][TheName].widget.WnParam);				-- Clear the parameters for the element
-			canvas.WnRenderData.Widget[typename][TheName].widget.WnParam=nil;					-- And throw it away
+		canvas.WnRenderData.Widget[element][TheName].widget:SetParent(canvas);			-- In case it was moved earlier
+		wipe(canvas.WnRenderData.Widget[element][TheName].widget.WnContext);				-- Clear the context for the element
+		canvas.WnRenderData.Widget[element][TheName].widget.WnContext=nil;				-- And throw it away
+		if (canvas.WnRenderData.Widget[element][TheName].widget.WnParam) then
+			wipe(canvas.WnRenderData.Widget[element][TheName].widget.WnParam);				-- Clear the parameters for the element
+			canvas.WnRenderData.Widget[element][TheName].widget.WnParam=nil;					-- And throw it away
 		end
 	end
 	-- Set up the widget a bit
-	canvas.WnRenderData.Widget[typename][TheName].widget.WnElement=element;
-	if (canvas.WnRenderData.Widget[typename][TheName].widget.SetDrawLayer) then
-		canvas.WnRenderData.Widget[typename][TheName].widget:SetDrawLayer("ARTWORK");
+	canvas.WnRenderData.Widget[element][TheName].widget.WnElement=element;
+	if (canvas.WnRenderData.Widget[element][TheName].widget.SetDrawLayer) then
+		canvas.WnRenderData.Widget[element][TheName].widget:SetDrawLayer("ARTWORK");
 	end
-	canvas.WnRenderData.Widget[typename][TheName].widget.WnContext=DM:CopyTable(canvas.WnRenderData.WnContext);	-- Insert current context in the element
-	canvas.WnRenderData.Widget[typename][TheName].Used=true;
-	canvas.WnRenderData.Widget[typename][TheName].widget.WnParam=DM:CopyTable(param);
-	canvas.WnRenderData.Widget[typename][TheName].widget.WnCanvas=canvas;
+	canvas.WnRenderData.Widget[element][TheName].widget.WnContext=DM:CopyTable(canvas.WnRenderData.WnContext);	-- Insert current context in the element
+	canvas.WnRenderData.Widget[element][TheName].Used=true;
+	canvas.WnRenderData.Widget[element][TheName].widget.WnParam=DM:CopyTable(param);
+	canvas.WnRenderData.Widget[element][TheName].widget.WnCanvas=canvas;
 	-- Set handlers
 	if (self:Flag(canvas,widget,"Button")) then
-		canvas.WnRenderData.Widget[typename][TheName].widget:SetScript("OnClick",DM.RU.PageButtonClicked);
+		canvas.WnRenderData.Widget[element][TheName].widget:SetScript("OnClick",DM.RU.PageButtonClicked);
+	end
+	-- Set some font for widget with fontstrings
+	if (self:Flag(canvas,widget,"FontString")) then
+		canvas.WnRenderData.Widget[element][TheName].widget:SetFontObject("GameFontNormal");
 	end
 
-	DM.RU:InitWidget(canvas.WnRenderData.Widget[typename][TheName].widget);
+	DM.RU:InitWidget(canvas.WnRenderData.Widget[element][TheName].widget);
 
-	return canvas.WnRenderData.Widget[typename][TheName].widget;
+	return canvas.WnRenderData.Widget[element][TheName].widget;
 end
 
 -- This function takes a parameter table, and assumes that it inherits
@@ -2709,6 +2846,7 @@ function DM.RU:SetFont(canvas,widget,param)
 		face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font[param.font]);
 	end
 	widget:SetFont(face,tonumber(height),flags);
+	widget:SetShadowOffset(0,0);
 end
 
 function DM.RU:MakeFont(widget,face,height,flags,font)
@@ -2763,14 +2901,19 @@ function DM.RU:SetInterface(canvas,element,class)
 	canvas.WnRenderData.Meta["<elements>"][element].IF.GetData=nil;		-- No method
 
 	-- Set the common programming interface
-	if (bit.band(class,DM.RU.Class.FontInstance)==DM.RU.Class.FontInstance) then
-		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
-		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="GetText";
+	if (bit.band(class,DM.RU.Class.SimpleHTML)==DM.RU.Class.SimpleHTML) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="_SetText";	-- These are hooked
+		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="_GetText";
 	elseif (bit.band(class,DM.RU.Class.Button)==DM.RU.Class.Button) then
 		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
 		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="GetText";
 	elseif (bit.band(class,DM.RU.Class.Texture)==DM.RU.Class.Texture) then
 		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetTexture";
+	elseif (bit.band(class,DM.RU.Class.ScrMsgFrame)==DM.RU.Class.ScrMsgFrame) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
+	elseif (bit.band(class,DM.RU.Class.FontInstance)==DM.RU.Class.FontInstance) then
+		canvas.WnRenderData.Meta["<elements>"][element].IF.SetData="SetText";
+		canvas.WnRenderData.Meta["<elements>"][element].IF.GetData="GetText";
 	end
 end
 
@@ -3038,7 +3181,7 @@ end
 
 function DM.Database:SplitMarker(marker)
 	if (not marker) then return nil; end
-	return strplit(DM.Net.Split1,marker);
+	return strsplit(DM.Net.Split1,marker);
 end
 
 function DM.Database:Set(id,entry,base,data,stamp)
@@ -3094,14 +3237,6 @@ end
 function DM:Init()
 	DM:TimeDiff();
 	DM.Net:Init();
-
---	if (not DM.MeasureFontString) then
---		DM.MeasureFontString=CreateFrame("FontString","DuckMod-Net-Messager"..TV,UIParent);
---		if (not DM.MeasureFontString) then
---			DM:Chat("Could not create a DuckMod measurement frame",1);
---			return;
---		end
---	end
 end
 
 
