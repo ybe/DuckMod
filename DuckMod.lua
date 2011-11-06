@@ -1,6 +1,6 @@
 --[[
 	DuckMod - A World of Warcraft add-on library
-	Copyright (C) 2009  Dag Bakken
+	Copyright (C) 2009-2011  Dag Bakken
 
 	DuckMod is free software: you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -18,7 +18,9 @@
 
 TestDebugTable={}
 
-local TV=2.0703;
+local TV=2.08;
+-- 2.08
+-- + Further implementation of WoWnet
 -- 2.0703
 -- + Rendering speed-up
 -- 2.0702
@@ -450,37 +452,6 @@ end
 -- "\2" 
 -- "\3" 
 -- "\4" 
---[[
-
-["Smilin' Slirk Brassknob"] d
-	Y 85.925
-	X 41.105
-	Zone The Storm Peaks - K3
-	Faction Neutral
-	Items e
-		item:35950:0:0:0:0:0:0 f
-			Name Sweet Potato Bread
-			Count -1
-		f
-		item:35954:0:0:0:0:0:0 f
-			Name Sweetened Goat's Milk
-			Count -1
-		f
-		item:33445:0:0:0:0:0:0 f
-			Name Honeymint Tea
-			Count -1
-		f
-		item:33449:0:0:0:0:0:0 f
-			Name Crusty Flatbread
-			Count -1
-		f
-		item:33444:0:0:0:0:0:0 f
-			Name Pungent Seal Whey
-			Count -1
-		f
-	e
-d",
-]]
 
 --	Entry ="\1", 
 --	sTable="\2", 
@@ -726,17 +697,6 @@ function DM.WoWnet:Connect(cbSR,cbID)
 	return self.Connected;
 end
 
-
---	WoWnetServer["Jäähinen"]={
---		home={
---			SECTIONDATA={
---				Keys="blog,Who da man?",
---				Data="<html><body><h1>SimpleHTML Demo: Ambush</h1><img src=\"Interface\\Icons\\Ability_Ambush\" width=\"32\" height=\"32\" align=\"right\"/><p align=\"center\">|cffee4400'You think this hurts? Just wait.'|r</p><br/><br/><p>Among every ability a rogue has at his disposal,<br/>Ambush is without a doubt the hardest hitting Rogue ability.</p></body></html>",
---				Description="Jäähinen's home-page.",
---			},
---		},
---	};
-
 -- Traverse all keys for this section and collate matched locations
 function DM.WoWnet:CheckKeys(section,sTable,key)
 	local list={};
@@ -757,27 +717,6 @@ function DM.WoWnet:CheckKeys(section,sTable,key)
 			end
 		end
 	end
---[[
-	local list={};
-	for entry,eTable in pairs(sTable) do
-		if (eTable.SECTIONDATA.Keys) then
-			local param={strsplit(",",eTable.SECTIONDATA.Keys)};
-			for _,tag in pairs(param) do
-				tag=string.lower(strtrim(tag));
-				if (tag==key) then
-					if (not eTable.SECTIONDATA.Description) then list[section]="<no description>";
-					else list[section]=eTable.SECTIONDATA.Description; end
-					break;
-				end
-			end
-		end
-		for subsection,ssTable in pairs(eTable) do
-			if (subsection~="SECTIONDATA") then
-				list=DM:CopyTable(self:CheckKeys(section.."/"..subsection,ssTable,key),list);
-			end
-		end
-	end
-]]
 	return list;
 end
 
@@ -785,10 +724,12 @@ end
 function DM.WoWnet:FindKey(key)
 	key=string.lower(strtrim(key));
 	local list={};
-	for host,hTable in pairs(WoWnetServer) do
-		list[host]={};
-		for section,sTable in pairs(hTable) do
-			list[host]=DM:CopyTable(self:CheckKeys("/"..section,sTable,key),list[host]);
+	if (WoWnetServer[GetRealmName()]) then
+		for host,hTable in pairs(WoWnetServer[GetRealmName()]) do
+			list[host]={};
+			for section,sTable in pairs(hTable) do
+				list[host]=DM:CopyTable(self:CheckKeys("/"..section,sTable,key),list[host]);
+			end
 		end
 	end
 	return list;
@@ -828,8 +769,8 @@ function DM.WoWnet:Input(sender,text)
 --		DM:Chat("Location request: "..text:sub(7),1);
 		self.Session:HandleAddress(sender,text:sub(7));
 	elseif (text:find("ping:",1,true)==1) then
---		DM:Chat("Ping request: "..text:sub(7),1);
-		if (WoWnetServer[text:sub(7)]) then
+		DM:Chat("Ping request: "..text:sub(6),1);
+		if (WoWnetServer[GetRealmName()][text:sub(6)]) then
 			DM.WoWnet.Session:SendData(sender,"ping",{Request=text});
 		end
 	end
@@ -846,21 +787,24 @@ function DM.WoWnet.Session:HandleAddress(sender,text)
 		loc=""
 	end
 --	DM:Chat("Testing who: "..who,1);
-	if (not WoWnetServer[who]) then return; end
+	if (not WoWnetServer[GetRealmName()][who]) then return; end
 --	DM:Chat(who.." is here.",1);
 	if (loc=="") then
 		loc="home";
-		if (not WoWnetServer[who]["home"]) then
+		if (not WoWnetServer[GetRealmName()][who][loc]) then
 			loc="default";
-			if (not WoWnetServer[who]["default"]) then
-				return;
+			if (not WoWnetServer[GetRealmName()][who][loc]) then
+				loc="index";
+				if (not WoWnetServer[GetRealmName()][who][loc]) then
+					return;
+				end
 			end
 		end
 	end
-	if (not WoWnetServer[who][loc]["SECTIONDATA"]) then
+	if (not WoWnetServer[GetRealmName()][who][loc]["SECTIONDATA"]) then
 		return;
 	end
-	local theData=DM:CopyTable(WoWnetServer[who][loc]["SECTIONDATA"]);
+	local theData=DM:CopyTable(WoWnetServer[GetRealmName()][who][loc]["SECTIONDATA"]);
 	theData.Meta={
 		Server=who,
 		Location=text,		-- As it would be specified in the edit-box
@@ -897,27 +841,23 @@ function DM.WoWnet.Session:InDataIntercept(prefix,user,sender,data)
 		data[entry]=DM.Table:GetType({},100)..DM.Code:Decode(data[entry])..DM.Table.eTable..string.char(100);	-- Decode
 		data[entry]=DM.Table:DecompressV1({},data[entry],true);	-- Unpack
 	end
+
 	-- Check special-handling data
-	if (data.WNFLAGMSGPING and data.WNFLAGMSGPING==DM.WoWnet.Session.ResolveWait.Server) then
-		if (data.WNFLAGMSGTOON) then
-			DM.WoWnet.Session.ResolveWait.PipeToon=data.WNFLAGMSGTOON;
-			data.WNFLAGMSGPING=nil;
-			data.WNFLAGMSGTOON=nil;
+	if (data.ping) then
+		DM:Chat("user: "..user);
+		DM:Chat("sender: "..sender);
+		if (data.ping and data.ping.Request) then
+			if (data.ping.Request:find("ping:")==1) then
+				if (data.ping.Request:sub(6)==DM.WoWnet.Session.ResolveWait.Server) then
+					DM:Chat("request: "..data.ping.Request);
+					DM.WoWnet.Session.ResolveWait.PipeToon=sender;	-- Save alt
+				end
+			end
 		end
 		return true;
 	end
 
-	-- Form-data received
-	local entry,eTable=next(data);
-	if (entry:find("formdata:")==1) then
-		if (not CrawlerIncoming[entry]) then CrawlerIncoming[entry]={}; end
-		if (not CrawlerIncoming[entry][user]) then CrawlerIncoming[entry][user]={}; end
-		-- Merge new incoming data
-		CrawlerIncoming[entry][user]=DuckLib:CopyTable(eTable,CrawlerIncoming[entry][user]);
-DM:Chat("Form received: "..entry.."/"..user);
-	end
-
-	data.CallBack.RX(data,sender);	-- Give table-pointer to registered WoWnet addon
+	self.cbInData(data,sender);	-- Give table-pointer to registered WoWnet addon
 	return true;
 end
 
@@ -942,8 +882,6 @@ function DM.WoWnet.Session:SendData(receiver,location,data)
 	DM.Net:ConnectW(DM.WoWnet.prefix,DM.WoWnet.Session.cbInData,receiver);
 --DM:Chat("Sending table for "..location,1);
 
---	DM.Net:SendTable(DM.WoWnet.prefix,data,location);	-- 101 is base nested table ASCII code
-
 	local prefix=DM.WoWnet.prefix;
 	if (not DM.Net:CanTransmit(prefix)) then return false; end					-- Can't transmit now
 	DM.Net:ClearOutput(prefix);
@@ -960,10 +898,6 @@ end
 -- SAM: Send Addon Message
 function DM.WoWnet.Session:SAM(a1,a2,a3)
 	SendAddonMessage(DM.WoWnet.prefix,a1,a2,a3);
---	if (a4==UnitName("player")) then
---		DM:Chat("-> LOOPBACK",1);
---		DM.Net:OnEvent("CHAT_MSG_ADDON",a1,a2,a3,a4);
---	end
 end
 
 function DM.WoWnet.Session:SendError(prefix,header,message)
@@ -987,76 +921,6 @@ function DM.WoWnet.Session:Contents(sender,host,data)
 --DM:Chat("Cleared...",1);
 	self.cbSearchResult(sender,host,strsplit(DUCKNET_WNSPLIT1,data));
 end
-
---[[
--- Called when a "WHISPER" with "wNr" is received, denoting a request for a page
-function DM.WoWnet.Session:Request(sender,host,data)
-	local prefix="nWd"..host;
-	-- Set up a channel with requester
-	DM.Net:ConnectW(prefix,
-					DM.WoWnet.Session.RX,	-- RX callback
-					DM.WoWnet.Session.INFO,	-- INFO callback
-					sender);				-- Receiver of data
-	-- Find host
-	if (not WoWnetServer[host]) then
-		self:SendError(prefix,"Fatal error","The host \""..host.."\" were not found.");
-		return true;		-- Set input as "Handled"
-	end
-
-	-- Find section
-	local loc={strsplit("/",data)};
-	local index=1;
-	local here=WoWnetServer[host];
-	while(loc[index]) do
-		if (not here[loc[index] ]) then
-			self:SendError(prefix,"Fatal error","The destination \""..loc[index].."\" does not exist.");
-			return true;		-- Set input as "Handled"
-		end
-		here=here[loc[index] ];
-		index=index+1;
-	end
-	if (index==1) then		-- root requested
-		if (not here.Default) then
-			self:SendError(prefix,"Fatal error","No default destination at this host.");
-			return true;		-- Set input as "Handled"
-		end
-		here=here.Default;
-	end
-
---	section
---		SECTIONDATA
---			Keys="key1,key2,...,keyN"
---			Data=page-data
---			Description="Short description"
-
-	local chunk={};
-	chunk.Location=host.."/"..data;
-	if (type(here.SECTIONDATA.Data)=="string") then chunk.Data=here.SECTIONDATA.Data;
-	elseif (type(here.SECTIONDATA.Data)=="table") then chunk.Data=DM:CopyTable(here.SECTIONDATA.Data);
-	else
-		self:SendError(prefix,"Fatal error","Incomplete data at this destination.");
-		return true;	-- Set input as "Handled"
-	end
-
---	chunk
---		Location="host/section/subsection"
---		Data=string|table
-	if (DM.Net:SendTable(prefix,chunk,"PageData")~=true) then
-		self:Error("Fatal error","Could not send page-data.");
-		return true;	-- Set input as "Handled"
-	end
-
-	return true;	-- Set input as "Handled"
-end
-]]
-
---[[
--- A table
-function DM.WoWnet.Session.RX(input)
-	if (not DM.WoWnet.Session.cbInData) then return; end
-	DM.WoWnet.Session.cbInData(DM.WoWnet.Session.InMarker,input);
-end
-]]
 
 -- A table
 function DM.WoWnet.Session.INFO(input)
@@ -1159,6 +1023,7 @@ function DM.Net.HeartBeat(frame,elapsed)
 	-- WoWnet data waiting for resolving
 	if (DM.WoWnet.Session.ResolveWait) then
 		if (DM.WoWnet.Session.ResolveWait.Table and DM.WoWnet.Session.ResolveWait.Server and DM.WoWnet.Session.ResolveWait.PipeToon) then
+DM:Chat("ready to send formdata");
 			if (DM.WoWnet.Session:SendData(DM.WoWnet.Session.ResolveWait.PipeToon,"formdata:"..DM.WoWnet.Session.ResolveWait.Server,DM.WoWnet.Session.ResolveWait.Table)) then
 				wipe(DM.WoWnet.Session.ResolveWait); DM.WoWnet.Session.ResolveWait=nil;	-- Clear if ok
 			end
@@ -2158,8 +2023,10 @@ function DM:Render(frame,sectiondata)
 			Data=sectiondata,
 			Keys="",
 			Description="Anonymous data",
-			Server="",
-			Location="",
+			Meta={
+				Server="",
+				Location="",
+			},
 		};
 	else return; end
 
@@ -2182,7 +2049,7 @@ end
 function DM:Render_2(canvas,remaining)
 	DM.RenderWnCounter=DM.RenderWnCounter+1;
 	canvas.WnRenderData.LockH=0;			-- Far left
-DM:Chat("Rendering...",1,0,1);
+--DM:Chat("Rendering...",1,0,1);
 	-- Do blocks
 	local entryname,param,data;
 --	entryname,param,data,remaining=DM.RU:PullSection(remaining);
@@ -2192,7 +2059,7 @@ DM:Chat("Rendering...",1,0,1);
 	while (remaining~="") do
 		entryname,param,data,remaining=DM.RU:PullSection(remaining);
 		if (entryname=="<meta>") then
-DM:Chat("Setting up meta...",1,0,1);
+--DM:Chat("Setting up meta...",1,0,1);
 			local remM=data;						-- Do the meta data
 			while (remM~="") do
 				entryname,param,data,remM=DM.RU:PullSection(remM);
@@ -2214,7 +2081,6 @@ DM:Chat("Setting up meta...",1,0,1);
 				end
 			end
 		elseif (entryname=="<body>") then
-DM:Chat("Setting linker placeholder...",1,0,1);
 			if (not canvas.MeasureFontString) then
 				canvas.MeasureFontString=DM.RU:GetWidget(canvas,"<ptext>",canvas.WnRenderData.Meta["<elements>"]["<ptext>"],nil);
 				if (not canvas.MeasureFontString) then
@@ -2223,7 +2089,7 @@ DM:Chat("Setting linker placeholder...",1,0,1);
 				end
 				canvas.MeasureFontString.SPECIALNOREUSE=true;
 			end
-DM:Chat("Rendering body...",1,0,1);
+--DM:Chat("Rendering body...",1,0,1);
 			-- Set the page standards from meta
 			if (canvas.WnRenderData.Meta["<page>"]) then
 				if (canvas.WnRenderData.Meta["<page>"].background) then
@@ -2380,26 +2246,8 @@ DM.RU.DefaultMeta={
 		["<text>"]={
 			font="Default",
 			pad=3,
---			widget="FontString",				-- the widget
---			Class=DM.RU.Class.TextLink_,
 			widget="EditBox",					-- the widget
 			Class=DM.RU.Class.DeadEditBox_,
-
---			widget="SimpleHTML",				-- the widget
---			Class=DM.RU.Class.SimpleHTML_,
---			widget="ScrollingMessageFrame",		-- the widget
---			Class=DM.RU.Class.ScrMsgFrame_,
-		},
-		["<Ltext>"]={
-			font="Default",
-			pad=3,
---			widget="FontString",				-- the widget
---			Class=DM.RU.Class.TextLink_,
-			widget="SimpleHTML",				-- the widget
-			Class=DM.RU.Class.SimpleHTML_,
---			widget="ScrollingMessageFrame",		-- the widget
---			Class=DM.RU.Class.ScrMsgFrame_,
-
 		},
 		["<h1>"]={
 			widget="FontString",				-- the widget
@@ -2435,13 +2283,6 @@ DM.RU.DefaultMeta={
 			pad=3,
 			Class=DM.RU.Class.Button_,
 		},
---		checkbox={
---			widget="CheckBox",
---		},
---		listbox={
---			widget="WnListBox",
---			lines="10",					-- Number of visible lines
---		},
 	},
 };
 
@@ -2500,17 +2341,21 @@ function DM.RU.SimpleHTML._GetText(self)
 end
 
 function DM.RU.Widget_OnHyperlinkClicked(widget,linkdata,link,button)
-	DM:Chat("Clicked: "..linkdata);	-- essential center - "H" part
-	DM:Chat("Clicked: "..link);		-- Complete link text
-	DM:Chat("Clicked: "..button);	-- "LeftButton"
+--	DM:Chat("Clicked: "..linkdata);	-- essential center - "H" part
+--	DM:Chat("Clicked: "..link);		-- Complete link text
+--	DM:Chat("Clicked: "..button);	-- "LeftButton"
+	DM.RU.SendEvent(widget,"DMEVENT_HYPERLINK_CLICKED",linkdata,link,button)
+end
 
-	if (widget.WnContext and widget.WnContext.onlinkclick) then
-		if (_G[widget.WnContext.onlinkclick]) then
-			_G[widget.WnContext.onlinkclick](linkdata,link,button);
-		else
-			DM:Chat("Non-existing click-handler: "..widget.WnContext.onlinkclick);
-		end
+function DM.RU.SendEvent(widget,event,arg1)
+	local parent=widget:GetParent():GetParent();
+	local handler=parent:GetScript("OnEvent");
+	if (not handler) then
+		parent=widget:GetParent();
+		handler=parent:GetScript("OnEvent");
+		if (not handler) then DEFAULT_CHAT_FRAME:AddMessage("No handler"); return; end
 	end
+	handler(parent,event,widget:GetParent(),arg1);
 end
 
 function DM.RU.PageButtonClicked(button)
@@ -2545,19 +2390,17 @@ function DM.RU.PageButtonClicked(button)
 				end
 				-- We've got data, so send it
 				if (stored) then
-if (transData.feedText) then	-- The id for the editcontrol
-	DM:Chat("Data: "..transData.feedText);
-end
 --					DM.Net:ConnectW(prefix,cbRX,receiver);
 					local canvas=button:GetParent();
 					if (not canvas.SECTIONDATA) then return; end			-- No meta-data
-					if (not canvas.SECTIONDATA.Server) then return; end		-- No server to send to
+					if (not canvas.SECTIONDATA.Meta) then return; end			-- No meta-data
+					if (not canvas.SECTIONDATA.Meta.Server) then return; end		-- No server to send to
 					-- Make a queue for polling and sending depending on result
-					DM.WoWnet.Session:SendPublic("ping:"..canvas.SECTIONDATA.Server);	-- Do ping
+					DM.WoWnet.Session:SendPublic("ping:"..canvas.SECTIONDATA.Meta.Server);	-- Do ping
 					if (not DM.WoWnet.Session.ResolveWait) then				-- Nothing else waiting
 						DM.WoWnet.Session.ResolveWait={
 							Table=transData,					-- Actual data to send
-							Server=canvas.SECTIONDATA.Server,	-- Server to send to
+							Server=canvas.SECTIONDATA.Meta.Server,	-- Server to send to
 							PipeToon=nil;						-- Who's the toon
 						};
 					end
@@ -2595,12 +2438,8 @@ function DM.RU:Mix(paramA,paramB)
 end
 
 function DM.RU:CopyTextAttributes(wF,wT)
---	wT:SetFontObject(wF:GetFontObject());
 	wT:SetFont(wF:GetFont());
 	wT:SetSpacing(wF:GetSpacing());
---	if (wF.GetText) then
---		wT:SetText(wF:GetText());
---	end
 end
 
 -- Handle "glue" and "flow"
@@ -2691,8 +2530,6 @@ function DM.RU:SetPosition(canvas,widget,param,swap)
 
 	-- Expand widget if text is bigger than said area
 	if (not wSet and widget.GetStringWidth) then
---DM:Chat("here...");
---		local _,step,_=widget:GetFont();
 		local sWidth=widget:GetStringWidth();
 
 		if (lockside=="LEFT") then
@@ -2741,7 +2578,7 @@ function DM.RU:SetPosition(canvas,widget,param,swap)
 	end
 
 	if (swap) then
-DM:Chat("s:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
+--DM:Chat("s:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
 --		widget:Show();
 		swap:ClearAllPoints();
 		swap:SetParent(widget:GetParent());
@@ -2752,7 +2589,7 @@ DM:Chat("s:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth())
 --		widget:Hide();
 		widget=swap;
 	end
-DM:Chat("w:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
+--DM:Chat("w:"..math.floor(widget:GetHeight())..","..math.floor(widget:GetWidth()));
 end
 
 -- Find an unused widget or create a new
@@ -2784,7 +2621,7 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 				canvas.WnRenderData.Widget[element][TheName].widget._GetText=DM.RU.SimpleHTML._GetText;
 			elseif (self:Flag(canvas,widget,"DeadEditBox")) then
 				canvas.WnRenderData.Widget[element][TheName].widget:SetHyperlinksEnabled(true);
-				canvas.WnRenderData.Widget[element][TheName].widget:SetTextInsets(-1,-1,-1,0);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetTextInsets(-1,-2,-1,0);	-- lrtb
 				canvas.WnRenderData.Widget[element][TheName].widget:SetMultiLine(true);
 				canvas.WnRenderData.Widget[element][TheName].widget:EnableKeyboard(nil);
 				canvas.WnRenderData.Widget[element][TheName].widget:SetAutoFocus(nil);
@@ -2835,13 +2672,8 @@ end
 function DM.RU:SetFont(canvas,widget,param)
 	local face,height,flags="",0,"";
 	if (not param) then param={}; end
-
 	-- Start with default
 	face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font.Default)
-
---if (param.font) then
---	DM:Chat(param.font);
---end
 	if (param.font and canvas.WnRenderData.Meta.font[param.font]) then			-- Font supplied and it exists
 		face,height,flags=self:MakeFont(widget,face,height,flags,canvas.WnRenderData.Meta.font[param.font]);
 	end
@@ -2865,7 +2697,6 @@ function DM.RU:MakeFont(widget,face,height,flags,font)
 		local r,g,b,a=self:SplitColor(font.color);
 		if (r) then widget:SetTextColor(r,g,b,a); end
 	end
---DM:Chat(height);
 	return face,height,flags;
 end
 
@@ -2979,67 +2810,7 @@ function DM.RU:PullSection(data)
 --DM:Chat("R:"..strtrim(data:sub(locEndTagEnd+1,locEndTagEnd+1+25)));
 	return data:sub(1,locTagNameEnd)..">",params,strtrim(data:sub(locTagEnd+1,locEndTagStart-1)),strtrim(data:sub(locEndTagEnd+1));
 end
---[[
-function DM.RU:PullSection(data)
-DM:Chat("PullSection...",1,0,1);
-	if (not data:find("<",1,true)==1) then return; end	-- No start-tag present
-	if (not data:find(">",1,true)) then return; end		-- No tag present
-DM:Chat("- got tag(s)",1,0,1);
-DM:Chat(data,1,0.8,1);
-	local param=nil;									-- nil it in case there are none
-	local remaining;
-	local locA=data:find(">",1,true);
-	local entryName=data:sub(1,locA);					-- Get tag with <
-	data=data:sub(locA+1);								-- Get data without tag
-	if (entryName:sub(entryName:len()-1)=="/>") then	-- Tag terminates itself
-		remaining=data;									-- Copy from data that is correct from last change
-		data="";										-- Set no data
-	else
-DM:Chat("- got tag "..entryName.." with data",1,0,1);
-DM:Chat(data,1,0.8,1);
-		local extryName;
-		if (entryName:find(" ",1,true)) then			-- tag has spaces (thus also parameters)
-			locA=entryName:find(" ",1,true);			-- Find first space
-			extryName="</"..entryName:sub(2,locA-1)..">";	-- Make ending tag before first space
-		else
-			extryName="</"..entryName:sub(2);			-- Make ending tag
-		end
-DM:Chat("- created "..extryName.." as ending tag",1,0,1);
-		locA=data:find(extryName,1,true);				-- Find the ending tag
-		if (not locA) then return; end					-- ERROR: No closing tag
-DM:Chat("- found "..extryName.." in data",1,0,1);
-		remaining=data:sub(locA+extryName:len());		-- Copy from termination and out
-		data=data:sub(1,locA-1);						-- Keep only enclosed data
-DM:Chat(remaining,1,0.8,1);
-	end
-	-- Clean up entryName (may still have parameters)
-	entryName=entryName:sub(2,entryName:len()-1);		-- Cut "<" and ">"
-	if (entryName:sub(-1)=="/") then					-- Self-terminating
-		entryName=entryName:sub(1,-2);					-- Cut last "/"
-	end
-	-- Here: data OK, remaining OK, entryName /w parameters and no < and >.
 
-	locA=entryName:find(" ",1,true);
-	if (locA) then										-- tag has spaces (thus also parameters)
-		param={};
-		-- Seek, don't split, as spaces may be in parameters' data too.
-		local work=entryName:sub(locA);					-- Cut tag
-		entryName=entryName:sub(1,locA-1);				-- Cut the first space
-		while (work~="") do
-			local pName,pData;
-			pName,pData,work=self:PullParameter(work);	-- Pull one and save the rest
-			if (pName) then param[pName]=pData; end		-- Save parameter
-		end
-	end
-	entryName="<"..strtrim(entryName)..">";		-- Cut rubbish
-	data=strtrim(data);							-- Cut rubbish
-	remaining=strtrim(remaining);				-- Cut rubbish
-DM:Chat("<- Done: "..entryName,1,0,1);
-	return entryName,param,data,remaining;		-- Return the distilled data
-end
-]]
-
---face="/Files/Fonts/Somewhere/uglyfont.ttf" size="12" color="#AARRGGBB"
 function DM.RU:PullParameter(data)
 	data=strtrim(data);
 	local loc=data:find("=\"",1,true);
