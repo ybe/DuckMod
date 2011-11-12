@@ -18,7 +18,11 @@
 
 TestDebugTable={}
 
-local TV=2.08;
+local TV=2.0802;
+-- 2.0802
+-- + Rendering reset to top of page at Render(), bug in inheritSys fixed
+-- 2.0801
+-- + Further work on wownet and rendering
 -- 2.08
 -- + Further implementation of WoWnet
 -- 2.0703
@@ -2039,6 +2043,7 @@ function DM:Render(frame,sectiondata)
 
 	DM.RenderWnCounter=0;
 	DM.RenderWnRemaining=sectiondata.Data;
+	if (DM.RU.Canvas:GetParent().SetVerticalScroll) then DM.RU.Canvas:GetParent():SetVerticalScroll(0); end
 	if (DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining)) then return true; end
 	-- Fail, so do fail-stuff
 	DM.RU.Canvas=nil;
@@ -2340,22 +2345,32 @@ function DM.RU.SimpleHTML._GetText(self)
 	return self.DMRUTextContents;
 end
 
-function DM.RU.Widget_OnHyperlinkClicked(widget,linkdata,link,button)
 --	DM:Chat("Clicked: "..linkdata);	-- essential center - "H" part
 --	DM:Chat("Clicked: "..link);		-- Complete link text
 --	DM:Chat("Clicked: "..button);	-- "LeftButton"
-	DM.RU.SendEvent(widget,"DMEVENT_HYPERLINK_CLICKED",linkdata,link,button)
+function DM.RU.Widget_OnHyperlinkClicked(widget,linkdata,link,button)
+	DM.RU.SendEvent(widget,"DMEVENT_HYPERLINK_CLICKED",linkdata,link,button);
+end
+function DM.RU.Widget_OnHyperlinkEnter(widget,linkdata,link)
+	DM.RU.SendEvent(widget,"DMEVENT_HYPERLINK_ENTER",linkdata,link);
+end
+function DM.RU.Widget_OnHyperlinkLeave(widget,linkdata,link)
+	DM.RU.SendEvent(widget,"DMEVENT_HYPERLINK_LEAVE",linkdata,link);
 end
 
-function DM.RU.SendEvent(widget,event,arg1)
-	local parent=widget:GetParent():GetParent();
+function DM.RU.SendEvent(widget,event,arg1,arg2,arg3,arg4)
+	local parent=widget:GetParent():GetParent():GetParent();	-- frame,scrollframe,appwindow
 	local handler=parent:GetScript("OnEvent");
 	if (not handler) then
-		parent=widget:GetParent();
+		parent=widget:GetParent():GetParent();
 		handler=parent:GetScript("OnEvent");
-		if (not handler) then DEFAULT_CHAT_FRAME:AddMessage("No handler"); return; end
+		if (not handler) then
+			parent=widget:GetParent();
+			handler=parent:GetScript("OnEvent");
+			if (not handler) then DEFAULT_CHAT_FRAME:AddMessage("No handler"); return; end
+		end
 	end
-	handler(parent,event,widget:GetParent(),arg1);
+	handler(parent,event,widget:GetParent(),arg1,arg2,arg3,arg4);
 end
 
 function DM.RU.PageButtonClicked(button)
@@ -2363,14 +2378,9 @@ function DM.RU.PageButtonClicked(button)
 		DM:Chat("No button provided");
 	else
 		local canvas=button.WnCanvas;
-		DM:Chat("Button clicked: "..button:GetName());
-		if (button.WnContext and button.WnContext.onclick) then
-			if (_G[button.WnContext.onclick]) then
-				_G[button.WnContext.onclick](button,button.WnContext,button.WnParam);
-			else
-				DM:Chat("Non-existing click-handler: "..button.WnContext.onclick);
-			end
-		elseif (not button.WnParam) then						-- No params in XML
+--DM:Chat("Button clicked: "..button:GetName());
+		DM.RU.SendEvent(button,"DMEVENT_BUTTON_CLICKED",button.WnContext,button.WnParam);
+		if (not button.WnParam) then						-- No params in XML
 			DM:Chat("No action associated with this button.");
 		elseif (button.WnParam.send) then						-- param "send" supplied
 			if (button.WnContext[button.WnParam.send]) then		-- It's send-data exists in the context
@@ -2407,7 +2417,7 @@ function DM.RU.PageButtonClicked(button)
 				end
 			end
 		else
-			DM:Chat("No known action associated with this button.");
+--			DM:Chat("No known action associated with this button.");
 		end
 	end
 end
@@ -2599,11 +2609,10 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 	if (not canvas.WnRenderData.Widget[element]) then canvas.WnRenderData.Widget[element]={}; end
 	local TheName=nil;
 	for wEntry,wTable in pairs(canvas.WnRenderData.Widget[element]) do
-		if (canvas.WnRenderData.Widget[element][wEntry].widget.SPECIALNOREUSE) then
-			DM:Chat("SPECIALNOREUSE");
-		end
 		if (not wTable.Used and not canvas.WnRenderData.Widget[element][wEntry].widget.SPECIALNOREUSE) then
-			TheName=wEntry;
+			if (canvas.WnRenderData.Widget[element][TheName].inheritSys==param.inheritSys) then
+				TheName=wEntry;
+			end
 		end
 	end
 
@@ -2615,7 +2624,8 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 			local creator="Create"..typename;
 			canvas.WnRenderData.Widget[element][TheName].widget=canvas[creator](canvas,TheName);	-- Simulate colon
 		else
-			canvas.WnRenderData.Widget[element][TheName].widget=CreateFrame(typename,TheName,canvas,widget.inheritSys);
+			canvas.WnRenderData.Widget[element][TheName].widget=CreateFrame(typename,TheName,canvas,param.inheritSys);
+			canvas.WnRenderData.Widget[element][TheName].inheritSys=param.inheritSys;
 			if (self:Flag(canvas,widget,"SimpleHTML")) then
 				canvas.WnRenderData.Widget[element][TheName].widget._SetText=DM.RU.SimpleHTML._SetText;
 				canvas.WnRenderData.Widget[element][TheName].widget._GetText=DM.RU.SimpleHTML._GetText;
@@ -2626,6 +2636,8 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 				canvas.WnRenderData.Widget[element][TheName].widget:EnableKeyboard(nil);
 				canvas.WnRenderData.Widget[element][TheName].widget:SetAutoFocus(nil);
 				canvas.WnRenderData.Widget[element][TheName].widget:SetScript("OnHyperlinkClick",DM.RU.Widget_OnHyperlinkClicked);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetScript("OnHyperlinkEnter",DM.RU.Widget_OnHyperlinkEnter);
+				canvas.WnRenderData.Widget[element][TheName].widget:SetScript("OnHyperlinkLeave",DM.RU.Widget_OnHyperlinkLeave);
 			elseif (self:Flag(canvas,widget,"ScrMsgFrame")) then
 				canvas.WnRenderData.Widget[element][TheName].widget.SetText=DM.RU.ScrMsgFrame.SetText;
 				canvas.WnRenderData.Widget[element][TheName].widget:SetHyperlinksEnabled(true);
