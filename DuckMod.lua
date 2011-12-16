@@ -18,7 +18,12 @@
 
 TestDebugTable={}
 
-local TV=2.0802;
+local TV=2.9901;
+-- 2.9901
+-- + Database: alpha
+--   All functionality present, but untested.
+-- 2.10
+-- + Removed ned for GetTime after it broke in patch 4.3
 -- 2.0802
 -- + Rendering reset to top of page at Render(), bug in inheritSys fixed
 -- 2.0801
@@ -107,6 +112,7 @@ DuckMod[TV]={								-- Add to array
 		hBlue="|cFEA0A0FF",				-- Highlight blue
 		Yellow="|cFFFFFF00",
 	},
+	Talk={},
 };
 
 local DM=DuckMod[TV];
@@ -220,6 +226,11 @@ function DM.MT:Run(name,func,...)
 	self.Threads[self.Count].cr=coroutine.create(func);
 	self.LastTime=GetTime();
 	self.LastStack="Running "..name;
+	self.Speed=(1/30);
+	-- For running without timer
+	self.PassCounter=0;
+	if (not self.Multiplier) then self.Multiplier=500; end
+
 	local succeeded,result=coroutine.resume(self.Threads[self.Count].cr,...);
 	if (not succeeded and Swatter) then
 		if (Swatter) then Swatter.OnError(result,nil,self.LastStack);
@@ -228,6 +239,7 @@ function DM.MT:Run(name,func,...)
 	self.RunningCo=nil;
 end
 
+--[[ Timer version
 function DM.MT:Yield(immediate,dbdata)
 	self.LastStack=debugstack(2);
 	local now=GetTime();
@@ -237,10 +249,29 @@ function DM.MT:Yield(immediate,dbdata)
 	self.LastTime=now;		-- Inaccurate to account for other snags
 	coroutine.yield();
 	self.LastStack=debugstack(2);
+end]]
+
+-- Update version
+function DM.MT:Yield(immediate,dbdata)
+	self.LastStack=debugstack(2);
+	self.PassCounter=self.PassCounter+1;
+	if (not immediate) then
+		if (self.PassCounter<self.Multiplier) then return; end
+	end
+	self.PassCounter=0;		-- Inaccurate to account for other snags
+	coroutine.yield();
+	self.LastStack=debugstack(2);
 end
 
-function DM.MT:Next()
+function DM.MT:Next(elapsed)
+	if (self.Count<1) then return; end
 	if (self.RunningCo) then return; end	-- Don't if we are already doing it. In case of real MT.
+	-- Set timing for MT yield
+	if (elapsed<self.Speed) then self.Multiplier=self.Multiplier+5;
+	else self.Multiplier=self.Multiplier-6; end
+	if (self.Multiplier<1) then self.Multiplier=1; end
+--DM:Chat(self.Multiplier);
+
 	if (not self.Threads[self.Current+1]) then self.Current=0; end	-- Wrap
 	self.Current=self.Current+1;
 	if (not self.Threads[self.Current]) then return; end	-- Nothing to do
@@ -1015,7 +1046,7 @@ function DM.Net.HeartBeat(frame,elapsed)
 	if (not elapsed) then return; end;
 	local self=DM.Net;
 
-	DM.MT:Next();		-- Run multi-threading
+	DM.MT:Next(elapsed);		-- Run multi-threading
 
 	-- Second pass of rendering
 	if (DM.RenderWnCounter==2) then DM:Render_2(DM.RU.Canvas,DM.RenderWnRemaining); end
@@ -1031,28 +1062,6 @@ DM:Chat("ready to send formdata");
 			if (DM.WoWnet.Session:SendData(DM.WoWnet.Session.ResolveWait.PipeToon,"formdata:"..DM.WoWnet.Session.ResolveWait.Server,DM.WoWnet.Session.ResolveWait.Table)) then
 				wipe(DM.WoWnet.Session.ResolveWait); DM.WoWnet.Session.ResolveWait=nil;	-- Clear if ok
 			end
-		end
-	end
-
---value._DATABASEKEEPERID=tab._DATABASEKEEPERID;	-- Insert the id
---value._DATABASEKEEPERMARKER=tab._DATABASEKEEPERMARKER..DM.Net.Split1..key;
-	-- Database sync queue
-	if (next(DM.Database.SQ) and DM.Net:Idle(DM.Database.SQ[1].tab._DATABASEKEEPERID)) then
-		local sent=nil;
-		-- Send data
-		if (type(DM.Database.SQ[1].tab[DM.Database.SQ[1].key])=="table") then
-			sent=DM.Database:SendTable(DM.Database.SQ[1].tab,DM.Database.SQ[1].key);
-		else
-			sent=DM.Database:SendSingle(DM.Database.SQ[1].tab,DM.Database.SQ[1].key);
-		end
-		if (sent) then
-			-- Remove entry
-			local index=1;
-			while (DM.Database.SQ[index+1]) do
-				DM.Database.SQ[index]=DM.Database.SQ[index+1];
-				index=index+1;
-			end
-			wipe(DM.Database.SQ[index]); DM.Database.SQ[index]=nil;
 		end
 	end
 
@@ -1081,6 +1090,7 @@ function DM.Net:HeartBeatCycle(prefix)
 	end
 
 	local now=time();
+	DM.Database:Heartbeat(prefix,now);
 
 --[[		DuckNet negotiation		]]
 	if (self.DB[prefix].Negotiate.Start) then
@@ -1099,18 +1109,12 @@ function DM.Net:HeartBeatCycle(prefix)
 					if (IWon) then DM:Chat(prefix.." DEBUG: Negotiation won");
 					else DM:Chat(prefix.." DEBUG: Negotiation lost"); end
 				end
-				if (self.DB[prefix].Negotiate.StartMarker:find("Database",1,true)==1) then
-					if (IWon) then
-						if (self.DB[prefix].Negotiate.StartMarker:find("DatabaseF",1,true)==1) then
-							local _,id,_=DM.Database:SplitMarker(self.DB[prefix].Negotiate.StartMarker);
-							DM.Database:PerformSync(id);
-						elseif (self.DB[prefix].Negotiate.StartMarker:find("DatabaseT",1,true)==1) then
---							DM.Database
-						elseif (self.DB[prefix].Negotiate.StartMarker:find("DatabaseE",1,true)==1) then
-						end
+				if (self.DB[prefix].Negotiate.StartMarker) then
+					if (self.DB[prefix].Negotiate.StartMarker:match("^DMDBLIB.+")) then
+						DB.Util:NegotiateDone(prefix,self.DB[prefix].Negotiate.StartMarker,IWon);
+					else
+						self.DB[prefix].CallBack.NegotiateWon(IWon,self.DB[prefix].Negotiate.StartMarker);		-- Tell the calling addon if it won or not
 					end
-				else
-					self.DB[prefix].CallBack.NegotiateWon(IWon,self.DB[prefix].Negotiate.StartMarker);		-- Tell the calling addon if it won or not
 				end
 				if (DuckMod_Present) then DuckMod_DN_NegotiationComplete(IWon); end
 			elseif (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Negotiation done");
@@ -1294,6 +1298,7 @@ function DM.Net:ParseInput(prefix,text,sender)
 
 	-- InStamp also at own stuff
 	local now=time();
+	DM.Talk[prefix]=now;
 	if (self.DB[prefix].CallBack.InStamp) then self.DB[prefix].CallBack.InStamp(now); end
 
 	-- Base evaluation
@@ -1351,7 +1356,11 @@ function DM.Net:ParseInput(prefix,text,sender)
 		--[[ Stamp tag/marker ]]
 		elseif (tag==DUCKNET_COMMAND.."M") then
 			stampmarker=entry;
-			self.DB[prefix].Negotiate.SelfStamp=self.DB[prefix].CallBack.CheckStamp(entry);		-- Get my addon's stamp
+			if (stampmarker:match("^DMDBLIB.+")) then
+				self.DB[prefix].Negotiate.SelfStamp=DM.Database.Util:GetStamp(prefix,stampmarker);
+			else
+				self.DB[prefix].Negotiate.SelfStamp=self.DB[prefix].CallBack.CheckStamp(stampmarker);	-- Get my addon's stamp
+			end
 			if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: Marker received: "..entry); end
 		end
 
@@ -1414,7 +1423,11 @@ function DM.Net:ParseInput(prefix,text,sender)
 			end
 			self.DB[prefix].Negotiate.HoldOff=DUCKNET_NEG_RUNNING;				-- Restart negotiation timer
 
-			self.DB[prefix].Negotiate.SelfStamp=self.DB[prefix].CallBack.CheckStamp(stampmarker);	-- Someone sends their stamp, so get my addon's stamp
+			if (stampmarker:match("^DMDBLIB.+")) then
+				self.DB[prefix].Negotiate.SelfStamp=DM.Database.Util:GetStamp(prefix,stampmarker);
+			else
+				self.DB[prefix].Negotiate.SelfStamp=self.DB[prefix].CallBack.CheckStamp(stampmarker);	-- Someone sends their stamp, so get my addon's stamp
+			end
 			if (self.DB[prefix].Negotiate.SelfStamp>self.DB[prefix].Negotiate.HighestStamp) then
 				self.DB[prefix].Negotiate.Start=true;							-- Restart negotiating
 				if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: ACT_MYSTAMP -> Lower stamp received. Restarting negotiation timer."); end
@@ -1433,7 +1446,12 @@ function DM.Net:ParseInput(prefix,text,sender)
 				if (DuckNet_Debug) then DM:Chat(prefix.." DEBUG: REQ_NEWDATA -> Already negotiating. Stopping all current negotiation."); end
 				self:StopNegotiation(prefix);
 			else
-				local thestamp=self.DB[prefix].CallBack.CheckStamp(stampmarker);
+				local thestamp;
+				if (stampmarker:match("^DMDBLIB.+")) then
+					thestamp=DM.Database.Util:GetStamp(prefix,stampmarker);
+				else
+					thestamp=self.DB[prefix].CallBack.CheckStamp(stampmarker);
+				end
 				local sentdata=self:StartNegotiation(prefix,stampmarker,thestamp,linestamp);
 				if (DuckMod_Present and sentdata) then DuckMod_DN_Negotiation(instance,stampmarker,thestamp,self.DB[prefix].Negotiate.Roll); DuckMod_DN_Neg_SetMyStamp(thestamp); end
 			end
@@ -1556,6 +1574,7 @@ function DM.Net:Out(prefix,text)
 		return;
 	end
 
+	DM.Talk[prefix]=time();
 -- Comment out these two to not get kicked at trans-debug
 	SendAddonMessage(prefix,text,self.DB[prefix].CType,self.DB[prefix].Receiver);
 	if (not self.DB[prefix].Receiver) then
@@ -2039,6 +2058,9 @@ function DM:Render(frame,sectiondata)
 	if (not frame.WnRenderData) then
 		frame.WnRenderData={};
 		frame.WnRenderData.Widget={};
+		frame.WnRenderData.Focus={};
+		frame.WnRenderData.WnContext={};
+		frame.GoTo=DM.RU.SetCanvasFocus;
 	end
 
 	DM.RenderWnCounter=0;
@@ -2117,6 +2139,8 @@ function DM:Render_2(canvas,remaining)
 					DM:Chat("Unknown tag: ?",1);
 				elseif (entryname=="<set>") then
 					DM.RU:SetContext(canvas,param);	-- Non-visual elements
+				elseif (entryname=="<focus>") then
+					if (param.id) then canvas.WnRenderData.Focus[param.id]=canvas.WnRenderData.Bottom; end
 				elseif (not canvas.WnRenderData.Meta["<elements>"][entryname]) then
 					DM:Chat("Unknown tag: "..entryname,1);
 				else
@@ -2306,8 +2330,9 @@ function DM.RU:InitPage(canvas)
 	canvas.WnRenderData.Meta=DM:CopyTable(DM.RU.DefaultMeta);	-- Set default meta
 	canvas.WnRenderData.LastWidget=nil;				-- nil is the container frame, and true only for the first widget
 	canvas.WnRenderData.Bottom=0;					-- Bottom of reendered page
-	canvas.WnRenderData.WnContext={};				-- Current run-length context
 	canvas.WnRenderData.LockH=0;					-- Last locked horizontal
+	wipe(canvas.WnRenderData.WnContext);			-- Current run-length context
+	wipe(canvas.WnRenderData.Focus);				-- Clear foci
 	-- Clear all used elements
 	for wEntry,wTable in pairs(canvas.WnRenderData.Widget) do     -- All widget groups
 		for wwEntry,wwTable in pairs(wTable) do		-- All widgets within group
@@ -2315,6 +2340,7 @@ function DM.RU:InitPage(canvas)
 			DM.RU:InitWidget(wwTable.widget);
 		end
 	end
+
 --DM:Chat("Setting default interfaces...",1,0,1);
 	-- Set interface for all defaults
 	for nElement,dElement in pairs(canvas.WnRenderData.Meta["<elements>"]) do
@@ -2343,6 +2369,15 @@ function DM.RU.SimpleHTML._SetText(self,text)
 end
 function DM.RU.SimpleHTML._GetText(self)
 	return self.DMRUTextContents;
+end
+
+function DM.RU.SetCanvasFocus(self,id)
+	if (not self.WnRenderData) then return; end
+	if (not self.WnRenderData.Focus) then return; end
+	if (not self.WnRenderData.Focus[id]) then return; end
+	if (self:GetParent().SetVerticalScroll) then
+		self:GetParent():SetVerticalScroll(self.WnRenderData.Focus[id]);
+	end
 end
 
 --	DM:Chat("Clicked: "..linkdata);	-- essential center - "H" part
@@ -2606,12 +2641,15 @@ end
 function DM.RU:GetWidget(canvas,element,widget,param)
 	if (not param) then param={}; end
 	local typename=widget.widget;
+	local inheritSys=widget.inheritSys;
+	if (param.inheritsys) then inheritSys=param.inheritsys; end		-- Note the lower case
 	if (not canvas.WnRenderData.Widget[element]) then canvas.WnRenderData.Widget[element]={}; end
 	local TheName=nil;
 	for wEntry,wTable in pairs(canvas.WnRenderData.Widget[element]) do
 		if (not wTable.Used and not canvas.WnRenderData.Widget[element][wEntry].widget.SPECIALNOREUSE) then
-			if (canvas.WnRenderData.Widget[element][TheName].inheritSys==param.inheritSys) then
+			if (canvas.WnRenderData.Widget[element][wEntry].inheritSys==inheritSys) then
 				TheName=wEntry;
+				break;
 			end
 		end
 	end
@@ -2624,8 +2662,8 @@ function DM.RU:GetWidget(canvas,element,widget,param)
 			local creator="Create"..typename;
 			canvas.WnRenderData.Widget[element][TheName].widget=canvas[creator](canvas,TheName);	-- Simulate colon
 		else
-			canvas.WnRenderData.Widget[element][TheName].widget=CreateFrame(typename,TheName,canvas,param.inheritSys);
-			canvas.WnRenderData.Widget[element][TheName].inheritSys=param.inheritSys;
+			canvas.WnRenderData.Widget[element][TheName].widget=CreateFrame(typename,TheName,canvas,inheritSys);
+			canvas.WnRenderData.Widget[element][TheName].inheritSys=inheritSys;
 			if (self:Flag(canvas,widget,"SimpleHTML")) then
 				canvas.WnRenderData.Widget[element][TheName].widget._SetText=DM.RU.SimpleHTML._SetText;
 				canvas.WnRenderData.Widget[element][TheName].widget._GetText=DM.RU.SimpleHTML._GetText;
@@ -2874,146 +2912,257 @@ function DM.DatabaseTableMeta.__call(tab,key,value,stamp)
 end
 
 
-DM.Database={
-	SQ={};
-};
 
-function DM.Database:Register(id,prefix,database)
-	setmetatable(database,DM.DatabaseTableMeta);
-	database._DATABASEKEEPERID=id;
-	database._DATABASEKEEPERMARKER=id;
-	self.Database[id]={		-- DM.Database.Database[id]
-		Prefix=prefix,		-- Communication to use
-		Data=database,		-- Handle to the database
-	}
-	self:Sync(id);
+
+
+
+
+
+DM.Database={ Separator="š", ID=0, DataVersion=1, };
+DM.DatabaseData={};
+DM.DatabaseQueue={};
+
+-- The data distribution code
+DM.DatabaseMetaTable={
+	__index = function (t,k)
+		if (not t._str_[k]) then return nil,nil; end
+		local stamp,typ,val=t._str_[k]:match("(%d+):(%a+):(.*)");
+		stamp=tonumber(stamp);
+		if (typ=="number") then val=tonumber(val);
+		elseif (typ=="bool") then if (typ=="true") then val=true; else val=false; end
+		elseif (typ=="nil") then val=nil;
+		elseif (typ=="table") then val=DM.Table:DecompressV1({},val,true);
+		end
+		return val,stamp;
+	end,
+	__newindex = function (t,k,v)
+		local typ,tim=type(v),DM.Database.Util:Time();
+		if (typ=="table") then
+			v=DM.Table:GetType(tData,100)..DM.Table:CompressV1(v,101)..DM.Table.eTable..string.char(100);
+		end			-- Make it into a string
+		t._str_[k]=tim..":"..typ..":"..tostring(v);
+		-- Written, so queue for send
+		t._queue_[{}]={ method="send", tree=rawget(t,"_tree_"), key=k };
+		DM.Database.ID=0;
+	end
+}
+
+function DM.Database:Register(prefix,db)
+	DM.DatabaseQueue[prefix]={};
+	DM.DatabaseData[prefix]=db;								-- Set reference
+	DM.DatabaseData[prefix]._queue_=DM.DatabaseQueue[prefix];		-- Set queue handler
+	if (not DM.DatabaseData[prefix]._str_) then
+		DM.DatabaseData[prefix]._str_={};
+		DM.DatabaseData[prefix]._tree_=prefix;
+	end
+	setmetatable(DM.DatabaseData[prefix],DM.DatabaseMetaTable);	-- Set handlers
+	self.Util:AddSubDatabases(DM.DatabaseData[prefix]);
+	DM.DatabaseData[prefix]._queue_[{}]={ method="poll", tree=prefix, key="" };	-- Poll entire database
 end
 
-function DM.Database:GetHash(id)
-	local base=self.Database[id].Data;
-	local hash=0;
-	return self:GetHash_2(base,hash);
+function DM.Database:Insert(mainDB,dbName,newDB)
+	if (not newDB) then newDB={}; end
+	mainDB[dbName]=newDB;							-- Set reference
+	mainDB[dbName]._queue_=mainDB._queue_;			-- Set queue handler
+	if (not mainDB[dbName]._str_) then
+		mainDB[dbName]._str_={};
+		mainDB[dbName]._tree_=mainDB._tree_..DM.Database.Separator..dbName;
+	end
+	setmetatable(mainDB[dbName],DM.DatabaseMetaTable);		-- Set handlers
+	self.Util:AddSubDatabases(mainDB[dbName]);
 end
 
-function DM.Database:GetHash_2(base,hash)
-	for entry,eData in pairs(base) do
-		if (type(eData)=="table") then
-			if (eData._DATABASEKEEPERINFO) then hash=hash+eData._DATABASEKEEPERINFO;
-			else hash=self:GetHash_2(eData,hash); end
+DM.Database.Util={}
+
+function DM.Database.Util:Time()
+	if (self.LockedTime) then return self.LockedTime; end
+	return time();
+end
+
+function DM.Database.Util:AddSubDatabases(thisDB)
+	-- Seek this level for other databases
+	for dbase,dTable in pairs(thisDB) do
+		if (type(dTable)=="table" and not dbase:match("^_.+_$")) then
+			DM.Database:Insert(thisDB,dbase,dTable);
+		end
+	end
+end
+
+function DM.Database.Util:GetHandle(prefix,tree,create)
+	tree={strsplit(DM.Database.Separator,tree)};
+	if (tree[1]~=prefix) then return nil; end
+	local goal=DM.DatabaseData;
+	for num,entry in ipairs(tree) do
+		if (not goal[entry]) then
+			if (create) then DM.Database:Insert(goal,entry); else return nil; end
+		end
+		goal=goal[entry];
+	end
+	return goal;
+end
+
+function DM.Database.Util:SendValue(prefix,tree,key)
+	-- Single values
+	if (key~="") then
+		local value,stamp=self:GetHandle(prefix,tree)[key];
+		return DM.Net:SendTable(prefix,{tree=tree, key=key, value=value},"DMDBLIB"..DM.Net.Split1.."value",stamp);
+	end
+	-- Complete databases
+	local handle=self:GetHandle(prefix,tree);
+	return DM.Net:SendTable(prefix,handle._str_,"DMDBLIB"..DM.Net.Split1.."database"..DM.Net.Split1..tree);
+end
+
+-- All database communication ends up here
+function DM.Database.Util:ReceiveValue(prefix,stamp,marker,data)
+	if (not DM.DatabaseQueue[prefix]) then return; end		-- Quick way out
+	if (marker=="DMDBLIB"..DM.Net.Split1.."value") then
+		local goal=self:GetHandle(prefix,data.tree,true);	-- Create it if need be
+		self.LockedTime=stamp;					-- Override time
+		goal[data.key]=data.value;				-- Set value
+		self.LockedTime=nil;					-- Re-enable time
+	end
+	local tree=marker:match("DMDBLIB"..DM.Net.Split1.."database"..DM.Net.Split1.."(.+)");
+	if (tree) then
+		local handle=self:GetHandle(prefix,tree);
+		for entry,eData in pairs(data) do
+			if (not handle._str_[entry]) then handle._str_[entry]=eData;
+			elseif (handle._str_[entry]~=eData) then
+				local stampOld=handle._str_[entry]:match("(%d+):(%a+):(.*)"); stampOld=tonumber(stampOld);
+				local stampNew=eData:match("(%d+):(%a+):(.*)"); stampNew=tonumber(stampNew);
+				if (stampNew>stampOld) then handle._str_[entry]=eData; end
+			end
+		end
+	end
+end
+
+function DM.Database.Util:GetIDForTable(db)
+	local id=0;
+	for entry,eTable in pairs(db._str_) do		-- Search storage directly
+		local _,s=db[entry];					-- Read it via metatable
+		id=id+s;								-- Add stamp
+	end
+	for entry,eTable in pairs(db) do
+		if (type(eTable)=="table") then
+			if (not entry:match("^_.+_$")) then
+				id=id+self:GetIDForTable(eTable);
+			end
+		end
+	end
+	return id;
+end
+
+function DM.Database.Util:GetID(prefix)
+	if (DM.Database.ID>0) then return DM.Database.ID; end
+	DM.Database.ID=GetIDForTable(DM.DatabaseData[prefix]);
+	return DM.Database.ID;
+end
+
+function DM.Database.Util:GetStamp(prefix,marker)
+	-- A poll for value stamp
+	local tree,key=marker:match("DMDBLIB"..DM.Net.Split1.."pollv"..DM.Net.Split1.."(.+)"..DM.Net.Split1.."(.+)");
+	if (tree and key) then
+		local handle=self:GetHandle(prefix,tree);
+		if (not handle) then return 0; end
+		local v,s=handle[key];
+		return s or 0;
+	end
+	-- A poll for database ID
+	tree=marker:match("DMDBLIB"..DM.Net.Split1.."pollt"..DM.Net.Split1.."(.+)");
+	if (tree) then
+		local handle=self:GetHandle(prefix,tree);
+		if (not handle) then return 0; end
+		return self:GetIDForTable(handle);
+	end
+end
+
+function DM.Database.Util:QueueTableForSend(prefix,tree)
+	DM.DatabaseQueue[prefix][{}]={ method="send", tree=tree, key="" };
+	local handle=self:GetHandle(prefix,tree);
+	for entry,eTable in pairs(handle) do
+		if (type(eTable)=="table" and not entry:match("^_.+_$")) then
+			self:QueueTableForSend(prefix,eTable._tree_);
+		end
+	end
+end
+
+function DM.Database.Util:NegotiateDone(prefix,marker,result)
+	if (not result) then return; end
+	-- Queue a single value
+	local tree,key=marker:match("DMDBLIB"..DM.Net.Split1.."pollv"..DM.Net.Split1.."(.+)"..DM.Net.Split1.."(.+)");
+	if (tree and key) then
+		DM.DatabaseQueue[prefix][{}]={ method="send", tree=tree, key=key };
+		return;
+	end
+	-- Queue a complete database
+	tree=marker:match("DMDBLIB"..DM.Net.Split1.."pollt"..DM.Net.Split1.."(.+)");
+	if (tree) then
+		self:QueueTableForSend(prefix,tree);		-- Recursive for nested databases
+		return;
+	end
+end
+
+-- The iterator allows nil-values, and stops when the key does not exist.
+function pairs_db(t)
+	return function (t,k)
+		k=next(t._str_,k);
+		local val,stamp=t[k];		-- Invoke metatable
+		if (stamp==nil) then return nil,nil; end
+		return k,val,stamp;
+	end,t,nil;
+end
+
+-- The iterator allows nil-values, and stops when the key does not exist.
+function ipairs_db(t)
+	return function (t,k)
+		k=k+1;
+		local val,stamp=t[k];		-- Invoke metatable
+		if (stamp==nil) then return nil,nil; end
+		return k,val,stamp;
+	end,t,0;
+end
+
+-- The iterator returns nested databases, and stops like normal pairs().
+function dpairs_db(t)
+	return function (t,k)
+		local v;
+		while(true) do
+			k,v=next(t,k);
+			if (type(v)=="table" and not k:match("^_.+_$")) then return k,v;
+			elseif (k==nil and v==nil) then return nil,nil; end
+		end
+	end,t,nil;
+end
+
+
+function DM.Database.Util:Prune(prefix)
+end
+
+DM.Database.Info={};
+function DM.Database.Info.Queue(prefix)
+	if (not DM.DatabaseQueue[prefix]) then return 0; end
+	return #(DM.DatabaseQueue[prefix]);
+end
+
+
+function DM.Database:Heartbeat(prefix,now)
+	if (now-DM.Talk[prefix]<DM:Random(7,13)) then return; end
+
+	local tKey,entry=next(DM.DatabaseQueue[prefix]);
+	if (entry.method=="send") then
+		if (not self.Util:SendValue(prefix,entry.tree,entry.key)) then return; end
+	elseif (entry.method=="poll") then
+		if (entry.key~="") then		-- Poll single value
+			local v,s=self:GetHandle(prefix,entry.tree)[entry.key]
+			if (not DM.Net:Poll(prefix,s,"DMDBLIB"..DM.Net.Split1.."pollv"..DM.Net.Split1..entry.tree..DM.Net.Split1..entry.key,DM.Database.DataVersion)) then return; end
 		else
-			local separator=eData:find(":",1,true);
-			hash=hash+tonumber(eData:sub(2,separator-1));
+			local id=0;
+			if (entry.tree==prefix) then id=self:GetID(prefix);
+			else id=self:GetIDForTable(self:GetHandle(prefix,tree)); end
+			if (not DM.Net:Poll(prefix,id,"DMDBLIB"..DM.Net.Split1.."pollt"..DM.Net.Split1..entry.tree,DM.Database.DataVersion)) then return; end
 		end
 	end
-	return hash;
-end
-
-function DM.Database:Sync(id)
-	-- post id and hash to prefix
-	DM.Net:Poll(self.Database[id].prefix,0,self:CombineMarker("DatabaseF",id,self:GetHash(id)));
-	-- The un-equal hashes will now negotiate an update cycle
-end
-
--- This function will be called if a sync is needed and I am the one to do the update
-function DM.Database:PerformSync(id)
-	DM.Net:SendTable(	self.Database[self.Stack.id].Prefix,
-						self.Database[id].Data,
-						self:CombineMarker("DatabaseF",id)	);
-end
-
-function DM.Database:MergeDatabase(id,data)
-	if (not self.Database[id]) then return nil; end
-	self:MergeDatabase_2(id,self.Database[id].Data,data)
-end
-
-function DM.Database:MergeDatabase_2(id,tOld,tNew)
-	for e,d in pairs(tNew) do
-		if (type(tNew[e])=="table") then
-			if (type(tOld[e])~="table") then tOld[e]=DM:CopyTable(tNew[e]);		-- Shortcut
-			else self:MergeDatabase_2(id,tOld[e],tNew[e]); end
-		else
-			self:Set(id,e,tOld,self:DecodeData(tNew[e]));	-- BEWARE: "DecodeData" returns two values
-		end
-	end
-end
-
-function DM.Database:SendTable(tab,key)
--- DM.Net:SendTable(prefix,ADD_Data,ADD_BlockName,ADD_Stamp)
-	return DM.Net:SendTable(	self.Database[tab._DATABASEKEEPERID].Prefix,
-								{ [self:CombineMarker("DatabaseT",tab[key]._DATABASEKEEPERMARKER)]=tab[key] },
-								"Database",
-								tab[key]._DATABASEKEEPERINFO	);
-end
-
-function DM.Database:SendSingle(tab,key)
--- DM.Net:SendSimple(prefix,name,thedata)
-	return DM.Net:SendSimple(	self.Database[tab._DATABASEKEEPERID].Prefix,
-								self:CombineMarker("DatabaseE",tab._DATABASEKEEPERMARKER,key),
-								tab[key]	);
-end
-
-function DM.Database:InData(data)
-	if (type(data)~="table") then return; end
-	
-end
-
-function DM.Database:CombineMarker(m1,m2,m3,m4)
-	if (not m1) then return ""; end
-	return strjoin(DM.Net.Split1,m1,m2,m3,m4);
-end
-
-function DM.Database:SplitMarker(marker)
-	if (not marker) then return nil; end
-	return strsplit(DM.Net.Split1,marker);
-end
-
-function DM.Database:Set(id,entry,base,data,stamp)
-	if (not self.Database[id]) then return nil; end
-	if (not base) then base=self.Database[id].Data; end
-	if (not stamp) then stamp=DM:Time(); end
-	if (base[entry]) then
-		local d,s=self:DecodeData(base[entry]);
-		if (not s) then s=0; end							-- Overwrite old (and incompatible) data
-		if (stamp<=s) then return true; end					-- Current data is newer
-		if (type(d)=="table") then wipe(base[entry]); end	-- It's a table, so wipe it first
-		base[entry]=nil;									-- Detach reference
-	end
-	base[entry]=self.CodeData(data,stamp);
-	return true;
-end
-
-function DM.Database:Get(id,entry,base)
-	if (not self.Database[id]) then return nil; end
-	if (not base) then base=self.Database[id].Data; end
-	return self:DecodeData(base[entry]);
-end
-
-function DM.Database:CodeData(data,stamp)
-	if (not stamp) then stamp=DM:Time(); end
-	local pre;
-	if (type(data)=="string") then pre="s";
-	elseif (type(data)=="number") then pre="n"; data=tostring(data);
-	elseif (type(data)=="boolean") then pre="b"; data=tostring(data);
-	elseif (type(data)=="nil") then pre="x"; data="nil";
-	elseif (type(data)=="table") then data._DATABASEKEEPERINFO=stamp; return data;
-	else return nil; end
-	return pre..stamp..":"..data;
-end
-
-function DM.Database:DecodeData(data)
-	if (type(data)=="string") then
-		local separator=data:find(":",1,true);
-		if (not separator) then return data; end
-		local stamp=tonumber(data:sub(2,separator-1));
-		if (data:sub(1,1)=="s") then return data:sub(separator+1),stamp;
-		elseif (data:sub(1,1)=="n") then return tonumber(data:sub(separator+1)),stamp;
-		elseif (data:sub(1,1)=="b") then if (data:sub(separator+1)=="true") then return true,stamp else return false,stamp; end
-		elseif (data:sub(1,1)=="x") then return nil,stamp;
-		end
-	elseif (type(data)=="table") then
-		return data,data._DATABASEKEEPERINFO;
-	end
-	return data;
+	DM.DatabaseQueue[prefix][tKey]=nil;
+	collectgarbage("collect");
 end
 
 
